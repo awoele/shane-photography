@@ -27,21 +27,37 @@ const NAV_LINKS = [
 
 type CategoryButtonProps = {
   active: boolean;
+  count: number;
   label: string;
   onClick: () => void;
 };
 
-const CategoryButton = ({ active, label, onClick }: CategoryButtonProps) => (
+const CategoryButton = ({
+  active,
+  count,
+  label,
+  onClick,
+}: CategoryButtonProps) => (
   <button
     type="button"
+    aria-pressed={active}
     onClick={onClick}
-    className={`rounded-full px-5 py-2 text-sm font-medium transition sm:px-6 ${
+    className={`group inline-flex items-center gap-2 rounded-full py-2 pl-4 pr-2.5 text-sm font-medium transition sm:pl-5 ${
       active
         ? 'bg-[#9db6b0] text-[#17110e]'
         : 'bg-[#26221e] text-stone-300 hover:bg-[#312b26] hover:text-stone-100'
     }`}
   >
-    {label}
+    <span>{label}</span>
+    <span
+      className={`rounded-full px-2 py-0.5 text-xs tabular-nums transition ${
+        active
+          ? 'bg-[#17110e]/15 text-[#17110e]'
+          : 'bg-white/[0.06] text-stone-500 group-hover:text-stone-300'
+      }`}
+    >
+      {count}
+    </span>
   </button>
 );
 
@@ -87,6 +103,16 @@ const Index: NextPage<IndexProps> = ({ photos, loadError }) => {
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
 
   const categories = useMemo(() => buildCategoryList(photos), [photos]);
+
+  const categoryCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+
+    photos.forEach((photo) => {
+      counts[photo.category] = (counts[photo.category] ?? 0) + 1;
+    });
+
+    return counts;
+  }, [photos]);
 
   const visiblePhotos = useMemo(() => {
     if (activeCategory === 'all') {
@@ -158,6 +184,7 @@ const Index: NextPage<IndexProps> = ({ photos, loadError }) => {
         <div className="mt-9 flex flex-wrap justify-center gap-2.5">
           <CategoryButton
             active={activeCategory === 'all'}
+            count={photos.length}
             label="All"
             onClick={() => setActiveCategory('all')}
           />
@@ -165,6 +192,7 @@ const Index: NextPage<IndexProps> = ({ photos, loadError }) => {
             <CategoryButton
               key={category}
               active={activeCategory === category}
+              count={categoryCounts[category] ?? 0}
               label={formatCategoryLabel(category)}
               onClick={() => setActiveCategory(category)}
             />
