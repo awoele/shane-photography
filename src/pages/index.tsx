@@ -184,7 +184,7 @@ const Index: NextPage<IndexProps> = ({ photos, loadError }) => {
           ) : null}
 
           {!loadError && visiblePhotos.length > 0 ? (
-            <div className="columns-1 gap-4 sm:columns-2 lg:columns-3">
+            <div className="columns-2 gap-3 md:columns-5 md:gap-4">
               {visiblePhotos.map((photo, index) => (
                 <button
                   key={photo.id}

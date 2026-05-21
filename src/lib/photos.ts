@@ -90,36 +90,10 @@ export const formatCameraName = (camera: string) => {
 
 export const EMPTY_VALUE = '—';
 
-export const getExifParts = (photo: Photo) =>
-  [
-    photo.focalLength,
-    photo.aperture,
-    photo.shutterSpeed,
-    formatIso(photo.iso),
-  ].filter(Boolean);
-
 export const getDisplayDate = (photo: Photo) => photo.dateTaken || photo.date;
-
-export const getLocationDateParts = (photo: Photo) =>
-  [photo.location, getDisplayDate(photo)].filter(Boolean);
-
-export const getCameraLensParts = (photo: Photo) =>
-  [formatCameraName(photo.camera), photo.lens].filter(Boolean);
 
 const displayValue = (value: string, fallback = EMPTY_VALUE) =>
   value || fallback;
-
-const formatWatermarkIso = (iso: string) => {
-  if (!iso) {
-    return EMPTY_VALUE;
-  }
-
-  if (/^iso\b/i.test(iso)) {
-    return iso.replace(/^iso/i, 'ISO');
-  }
-
-  return `ISO ${iso}`;
-};
 
 const parsePhotoDate = (value: string) => {
   if (!value) {
@@ -148,6 +122,10 @@ export const getPhotoPanelFields = (photo: Photo) => [
     value: getPhotoTime(photo),
   },
   {
+    label: 'CATEGORY',
+    value: displayValue(formatCategoryLabel(photo.category)),
+  },
+  {
     label: 'LOCATION',
     value: displayValue(photo.location),
   },
@@ -159,17 +137,23 @@ export const getPhotoPanelFields = (photo: Photo) => [
     label: 'LENS',
     value: displayValue(photo.lens),
   },
+  {
+    label: 'FOCAL LENGTH',
+    value: displayValue(photo.focalLength),
+  },
+  {
+    label: 'APERTURE',
+    value: displayValue(photo.aperture),
+  },
+  {
+    label: 'SHUTTER SPEED',
+    value: displayValue(photo.shutterSpeed),
+  },
+  {
+    label: 'ISO',
+    value: displayValue(formatIso(photo.iso)),
+  },
 ];
-
-export const getWatermarkLines = (photo: Photo) => ({
-  camera: formatCameraName(photo.camera) || 'Camera',
-  exposure: [
-    displayValue(photo.focalLength),
-    displayValue(photo.aperture),
-    displayValue(photo.shutterSpeed),
-    formatWatermarkIso(photo.iso),
-  ].join(' \u00b7 '),
-});
 
 export const getPhotoTimestamp = (photo: Photo) =>
   parsePhotoDate(photo.dateTaken || photo.date);

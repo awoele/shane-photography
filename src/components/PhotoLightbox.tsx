@@ -8,8 +8,7 @@ import {
 } from 'react';
 
 import { PhotoInfoPanel } from '@/components/PhotoInfoPanel';
-import { PhotoWatermark } from '@/components/PhotoWatermark';
-import { type Photo } from '@/lib/photos';
+import { formatCategoryLabel, type Photo } from '@/lib/photos';
 
 type PhotoLightboxProps = {
   photos: Photo[];
@@ -54,6 +53,51 @@ const IconButton = ({
   </button>
 );
 
+const CommentsPanel = () => {
+  const [draft, setDraft] = useState('');
+  const [status, setStatus] = useState('');
+
+  const handleSend = () => {
+    setDraft('');
+    setStatus('Comments are not enabled yet.');
+  };
+
+  return (
+    <section className="flex min-h-0 flex-1 flex-col border-t border-white/[0.07]">
+      <div className="min-h-0 flex-1 overflow-y-auto p-5">
+        <h3 className="text-sm font-semibold text-stone-100">Comments</h3>
+        <div className="mt-5 rounded-2xl border border-white/[0.06] bg-[#17120f]/60 px-4 py-5 text-sm text-stone-500">
+          No comments yet.
+        </div>
+      </div>
+
+      <div className="shrink-0 border-t border-white/[0.07] p-4">
+        <div className="flex items-center gap-2 rounded-full bg-[#15110e] p-1.5 ring-1 ring-white/[0.08]">
+          <input
+            value={draft}
+            onChange={(event) => {
+              setDraft(event.target.value);
+              setStatus('');
+            }}
+            placeholder="Say something..."
+            className="min-w-0 flex-1 bg-transparent px-3 text-sm text-stone-200 outline-none placeholder:text-stone-600"
+          />
+          <button
+            type="button"
+            onClick={handleSend}
+            className="rounded-full bg-[#9db6b0] px-4 py-2 text-xs font-semibold text-[#17110e] transition hover:bg-[#b7cec8]"
+          >
+            Send
+          </button>
+        </div>
+        {status ? (
+          <p className="mt-2 text-xs text-stone-500">{status}</p>
+        ) : null}
+      </div>
+    </section>
+  );
+};
+
 const PhotoLightbox = ({
   photos,
   activeIndex,
@@ -61,10 +105,17 @@ const PhotoLightbox = ({
   onSelectIndex,
 }: PhotoLightboxProps) => {
   const [zoom, setZoom] = useState(MIN_ZOOM);
+  const [pan, setPan] = useState<Point>({ x: 0, y: 0 });
   const activePhoto = photos[activeIndex];
   const pointers = useRef<Map<number, Point>>(new Map());
   const pinchStartDistance = useRef(0);
   const pinchStartZoom = useRef(MIN_ZOOM);
+  const lastPanPoint = useRef<Point | null>(null);
+
+  const resetView = () => {
+    setZoom(MIN_ZOOM);
+    setPan({ x: 0, y: 0 });
+  };
 
   const goTo = (offset: number) => {
     if (photos.length === 0) {
@@ -72,8 +123,18 @@ const PhotoLightbox = ({
     }
 
     const nextIndex = (activeIndex + offset + photos.length) % photos.length;
-    setZoom(MIN_ZOOM);
+    resetView();
     onSelectIndex(nextIndex);
+  };
+
+  const setZoomSafely = (nextZoom: number) => {
+    const clamped = clampZoom(nextZoom);
+
+    setZoom(clamped);
+
+    if (clamped === MIN_ZOOM) {
+      setPan({ x: 0, y: 0 });
+    }
   };
 
   const zoomIn = () => {
@@ -81,30 +142,50 @@ const PhotoLightbox = ({
   };
 
   const zoomOut = () => {
-    setZoom((current) => clampZoom(current - ZOOM_STEP));
-  };
+    setZoom((current) => {
+      const nextZoom = clampZoom(current - ZOOM_STEP);
 
-  const resetZoom = () => {
-    setZoom(MIN_ZOOM);
+      if (nextZoom === MIN_ZOOM) {
+        setPan({ x: 0, y: 0 });
+      }
+
+      return nextZoom;
+    });
   };
 
   const handleWheel = (event: WheelEvent<HTMLDivElement>) => {
     event.preventDefault();
-    setZoom((current) =>
-      clampZoom(current + (event.deltaY < 0 ? ZOOM_STEP : -ZOOM_STEP)),
-    );
+    setZoom((current) => {
+      const nextZoom = clampZoom(
+        current + (event.deltaY < 0 ? ZOOM_STEP : -ZOOM_STEP),
+      );
+
+      if (nextZoom === MIN_ZOOM) {
+        setPan({ x: 0, y: 0 });
+      }
+
+      return nextZoom;
+    });
   };
 
   const updatePointer = (event: React.PointerEvent<HTMLDivElement>) => {
-    pointers.current.set(event.pointerId, {
+    const point = {
       x: event.clientX,
       y: event.clientY,
-    });
+    };
+
+    pointers.current.set(event.pointerId, point);
+
+    return point;
   };
 
   const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
     event.currentTarget.setPointerCapture(event.pointerId);
-    updatePointer(event);
+    const point = updatePointer(event);
+
+    if (pointers.current.size === 1) {
+      lastPanPoint.current = point;
+    }
 
     if (pointers.current.size === 2) {
       const points = Array.from(pointers.current.values());
@@ -114,6 +195,7 @@ const PhotoLightbox = ({
       if (first && second) {
         pinchStartDistance.current = getDistance(first, second);
         pinchStartZoom.current = zoom;
+        lastPanPoint.current = null;
       }
     }
   };
@@ -123,31 +205,63 @@ const PhotoLightbox = ({
       return;
     }
 
-    updatePointer(event);
+    const point = updatePointer(event);
 
-    if (pointers.current.size !== 2 || pinchStartDistance.current === 0) {
+    if (pointers.current.size === 2 && pinchStartDistance.current > 0) {
+      const points = Array.from(pointers.current.values());
+      const first = points[0];
+      const second = points[1];
+
+      if (first && second) {
+        const distance = getDistance(first, second);
+        setZoomSafely(
+          pinchStartZoom.current * (distance / pinchStartDistance.current),
+        );
+      }
+
       return;
     }
 
-    const points = Array.from(pointers.current.values());
-    const first = points[0];
-    const second = points[1];
+    if (
+      pointers.current.size === 1 &&
+      zoom > MIN_ZOOM &&
+      lastPanPoint.current
+    ) {
+      const deltaX = point.x - lastPanPoint.current.x;
+      const deltaY = point.y - lastPanPoint.current.y;
 
-    if (first && second) {
-      const distance = getDistance(first, second);
-      const nextZoom =
-        pinchStartZoom.current * (distance / pinchStartDistance.current);
-      setZoom(clampZoom(nextZoom));
+      setPan((current) => ({
+        x: current.x + deltaX,
+        y: current.y + deltaY,
+      }));
+      lastPanPoint.current = point;
     }
   };
 
   const handlePointerEnd = (event: React.PointerEvent<HTMLDivElement>) => {
     pointers.current.delete(event.pointerId);
 
-    if (pointers.current.size < 2) {
+    if (pointers.current.size === 1) {
+      const remainingPoint = Array.from(pointers.current.values())[0];
+      lastPanPoint.current = remainingPoint ?? null;
       pinchStartDistance.current = 0;
       pinchStartZoom.current = zoom;
+      return;
     }
+
+    pointers.current.clear();
+    lastPanPoint.current = null;
+    pinchStartDistance.current = 0;
+    pinchStartZoom.current = zoom;
+  };
+
+  const handleDoubleClick = () => {
+    if (zoom === MIN_ZOOM) {
+      setZoom(2);
+      return;
+    }
+
+    resetView();
   };
 
   useEffect(() => {
@@ -175,8 +289,9 @@ const PhotoLightbox = ({
   });
 
   useEffect(() => {
-    setZoom(MIN_ZOOM);
+    resetView();
     pointers.current.clear();
+    lastPanPoint.current = null;
     pinchStartDistance.current = 0;
     pinchStartZoom.current = MIN_ZOOM;
   }, [activeIndex]);
@@ -187,14 +302,14 @@ const PhotoLightbox = ({
 
   return (
     <div
-      className="fixed inset-0 z-50 bg-[#0f0b08]/95 p-3 text-stone-100 backdrop-blur-xl sm:p-5"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-[#090706]/80 p-2 text-stone-100 backdrop-blur-md sm:p-4"
       role="dialog"
       aria-modal="true"
       aria-label={activePhoto.title}
     >
-      <div className="mx-auto flex size-full max-w-[1360px] overflow-hidden rounded-[22px] border border-white/[0.08] bg-[#17120f] shadow-2xl shadow-black/40 max-lg:flex-col">
-        <section className="relative flex min-h-[54vh] flex-1 items-center justify-center bg-[#11100e] lg:min-h-0">
-          <div className="absolute left-4 top-4 z-10 rounded-full bg-[#17120f]/75 px-3 py-1 text-xs text-stone-400 ring-1 ring-white/10 backdrop-blur">
+      <div className="flex h-[94svh] max-h-[92vh] w-[94vw] max-w-[1440px] overflow-hidden rounded-[22px] border border-white/[0.09] bg-[#18130f] shadow-2xl shadow-black/50 max-md:flex-col md:h-[90vh]">
+        <section className="relative flex min-h-0 flex-1 items-center justify-center bg-[#11100e] max-md:min-h-[52svh]">
+          <div className="absolute left-4 top-4 z-10 rounded-full bg-[#18130f]/75 px-3 py-1 text-xs text-stone-400 ring-1 ring-white/10 backdrop-blur">
             {activeIndex + 1} / {photos.length}
           </div>
 
@@ -206,7 +321,7 @@ const PhotoLightbox = ({
             </IconButton>
             <button
               type="button"
-              onClick={resetZoom}
+              onClick={resetView}
               className="hidden h-10 rounded-full bg-[#17120f]/80 px-3 text-xs text-stone-300 ring-1 ring-white/10 transition hover:bg-stone-800 hover:text-white sm:block"
             >
               {Math.round(zoom * 100)}%
@@ -216,6 +331,13 @@ const PhotoLightbox = ({
                 +
               </span>
             </IconButton>
+            <button
+              type="button"
+              onClick={resetView}
+              className="hidden h-10 rounded-full bg-[#17120f]/80 px-3 text-xs text-stone-300 ring-1 ring-white/10 transition hover:bg-stone-800 hover:text-white lg:block"
+            >
+              Reset
+            </button>
           </div>
 
           <IconButton
@@ -238,7 +360,10 @@ const PhotoLightbox = ({
           </IconButton>
 
           <div
-            className="flex size-full items-center justify-center overflow-hidden px-4 py-16 sm:px-12 lg:px-16"
+            className={`flex size-full items-center justify-center overflow-hidden px-4 py-14 sm:px-12 ${
+              zoom > MIN_ZOOM ? 'cursor-grab active:cursor-grabbing' : ''
+            }`}
+            onDoubleClick={handleDoubleClick}
             onPointerDown={handlePointerDown}
             onPointerMove={handlePointerMove}
             onPointerUp={handlePointerEnd}
@@ -246,17 +371,16 @@ const PhotoLightbox = ({
             onWheel={handleWheel}
             style={{ touchAction: 'none' }}
           >
-            <div className="relative inline-flex max-h-full max-w-full items-center justify-center">
-              <img
-                key={activePhoto.id}
-                src={activePhoto.src}
-                alt={activePhoto.title}
-                draggable={false}
-                className="max-h-full max-w-full select-none object-contain transition-transform duration-150 ease-out"
-                style={{ transform: `scale(${zoom})` }}
-              />
-              <PhotoWatermark photo={activePhoto} />
-            </div>
+            <img
+              key={activePhoto.id}
+              src={activePhoto.src}
+              alt={activePhoto.title}
+              draggable={false}
+              className="max-h-full max-w-full select-none object-contain transition-transform duration-150 ease-out"
+              style={{
+                transform: `translate3d(${pan.x}px, ${pan.y}px, 0) scale(${zoom})`,
+              }}
+            />
           </div>
 
           <IconButton
@@ -279,11 +403,13 @@ const PhotoLightbox = ({
           </IconButton>
         </section>
 
-        <aside className="flex w-full shrink-0 flex-col border-t border-white/[0.08] bg-[#1d1915] max-lg:max-h-[46vh] lg:h-full lg:w-[390px] lg:border-l lg:border-t-0 xl:w-[430px]">
-          <div className="flex h-16 shrink-0 items-center justify-between border-b border-white/[0.07] px-5">
+        <aside className="flex w-full shrink-0 flex-col border-t border-white/[0.08] bg-[#1d1915] md:h-full md:w-[340px] md:border-l md:border-t-0 lg:w-[360px]">
+          <div className="flex h-14 shrink-0 items-center justify-between border-b border-white/[0.07] px-5">
             <div className="min-w-0">
-              <p className="text-sm font-semibold text-stone-100">Shane</p>
-              <p className="mt-0.5 text-xs text-stone-500">Photo archive</p>
+              <p className="text-sm font-semibold text-stone-100">
+                {formatCategoryLabel(activePhoto.category) || '—'}
+              </p>
+              <p className="mt-0.5 text-xs text-stone-500">Category</p>
             </div>
             <IconButton label="Close lightbox" onClick={onClose}>
               <svg
@@ -302,11 +428,13 @@ const PhotoLightbox = ({
             </IconButton>
           </div>
 
-          <PhotoInfoPanel
-            photo={activePhoto}
-            className="min-h-0 flex-1 overflow-y-auto px-5 py-6"
-            showPrivateNote
-          />
+          <div className="flex min-h-0 flex-1 flex-col">
+            <PhotoInfoPanel
+              photo={activePhoto}
+              className="max-h-[45%] shrink-0 overflow-y-auto p-5 md:max-h-[52%]"
+            />
+            <CommentsPanel />
+          </div>
         </aside>
       </div>
     </div>
