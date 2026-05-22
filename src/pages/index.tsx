@@ -1,5 +1,5 @@
 /* eslint-disable @next/next/no-img-element */
-import type { GetStaticProps, NextPage } from 'next';
+import type { GetServerSideProps, NextPage } from 'next';
 import Link from 'next/link';
 import { useMemo, useState } from 'react';
 
@@ -73,16 +73,19 @@ const StatusPanel = ({ title, message }: StatusPanelProps) => (
   </div>
 );
 
-export const getStaticProps: GetStaticProps<IndexProps> = async () => {
+export const getServerSideProps: GetServerSideProps<IndexProps> = async ({
+  res,
+}) => {
+  res.setHeader('Cache-Control', 'no-store, max-age=0');
+
   try {
-    const photos = await fetchPhotos();
+    const photos = await fetchPhotos({ cacheBust: true });
 
     return {
       props: {
         photos,
         loadError: '',
       },
-      revalidate: 60,
     };
   } catch (error) {
     return {
@@ -93,7 +96,6 @@ export const getStaticProps: GetStaticProps<IndexProps> = async () => {
             ? error.message
             : 'Could not load remote photo data.',
       },
-      revalidate: 60,
     };
   }
 };

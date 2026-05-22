@@ -11,19 +11,17 @@ type ArchiveFieldProps = {
 };
 
 const ArchiveField = ({ label, value }: ArchiveFieldProps) => (
-  <section className="space-y-1.5">
-    <h3 className="text-[10px] font-medium uppercase tracking-[0.24em] text-stone-500">
-      {label}
-    </h3>
-    <p className="break-words text-sm leading-6 text-stone-100">{value}</p>
-  </section>
+  <div className="grid grid-cols-[108px_minmax(0,1fr)] gap-3 py-1.5 text-sm leading-5 sm:grid-cols-[118px_minmax(0,1fr)]">
+    <dt className="text-stone-500">{label}</dt>
+    <dd className="break-words text-stone-100">{value}</dd>
+  </div>
 );
 
 const PhotoInfoPanel = ({ photo, className = '' }: PhotoInfoPanelProps) => {
   const fields = getPhotoPanelFields(photo);
 
   return (
-    <div className={`space-y-5 ${className}`}>
+    <dl className={`divide-y divide-white/[0.055] ${className}`}>
       {fields.map((field) => (
         <ArchiveField
           key={field.label}
@@ -33,9 +31,9 @@ const PhotoInfoPanel = ({ photo, className = '' }: PhotoInfoPanelProps) => {
       ))}
 
       {photo.description ? (
-        <ArchiveField label="DESCRIPTION" value={photo.description} />
+        <ArchiveField label="Description" value={photo.description} />
       ) : null}
-    </div>
+    </dl>
   );
 };
 

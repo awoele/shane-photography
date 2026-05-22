@@ -35,9 +35,9 @@ local
 .vercel
 
 # photo processing files
-photo-processing/
-raw/
-output/
-photos/
-thumbnails/
-data/
+/photo-processing/
+/raw/
+/output/
+/photos/
+/thumbnails/
+/data/

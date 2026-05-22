@@ -23,6 +23,10 @@ export type Photo = {
 
 type RawPhoto = Partial<Record<keyof Photo, unknown>>;
 
+type FetchPhotosOptions = {
+  cacheBust?: boolean;
+};
+
 const toText = (value: unknown) => {
   if (typeof value !== 'string') {
     return '';
@@ -88,7 +92,7 @@ export const formatCameraName = (camera: string) => {
   return camera;
 };
 
-export const EMPTY_VALUE = '—';
+export const EMPTY_VALUE = '\u2014';
 
 export const getDisplayDate = (photo: Photo) => photo.dateTaken || photo.date;
 
@@ -114,39 +118,39 @@ export const getPhotoTime = (photo: Photo) =>
 
 export const getPhotoPanelFields = (photo: Photo) => [
   {
-    label: 'TITLE',
+    label: 'Title',
     value: getPhotoTitle(photo),
   },
   {
-    label: 'TIME',
+    label: 'Time',
     value: getPhotoTime(photo),
   },
   {
-    label: 'CATEGORY',
-    value: displayValue(formatCategoryLabel(photo.category)),
+    label: 'Category',
+    value: displayValue(photo.category),
   },
   {
-    label: 'LOCATION',
+    label: 'Location',
     value: displayValue(photo.location),
   },
   {
-    label: 'CAMERA',
+    label: 'Camera',
     value: displayValue(formatCameraName(photo.camera)),
   },
   {
-    label: 'LENS',
+    label: 'Lens',
     value: displayValue(photo.lens),
   },
   {
-    label: 'FOCAL LENGTH',
+    label: 'Focal Length',
     value: displayValue(photo.focalLength),
   },
   {
-    label: 'APERTURE',
+    label: 'Aperture',
     value: displayValue(photo.aperture),
   },
   {
-    label: 'SHUTTER SPEED',
+    label: 'Shutter Speed',
     value: displayValue(photo.shutterSpeed),
   },
   {
@@ -187,10 +191,18 @@ const normalizePhoto = (item: unknown): Photo => {
 const isUsablePhoto = (photo: Photo) =>
   Boolean(photo.id && photo.category && photo.src && photo.thumbnail);
 
-export const fetchPhotos = async () => {
-  const response = await fetch(PHOTOS_JSON_URL, {
+export const getPhotosJsonUrl = ({
+  cacheBust = false,
+}: FetchPhotosOptions = {}) =>
+  cacheBust ? `${PHOTOS_JSON_URL}?t=${Date.now()}` : PHOTOS_JSON_URL;
+
+export const fetchPhotos = async (options: FetchPhotosOptions = {}) => {
+  const response = await fetch(getPhotosJsonUrl(options), {
+    cache: 'no-store',
     headers: {
       accept: 'application/json',
+      'cache-control': 'no-cache',
+      pragma: 'no-cache',
     },
   });
 
