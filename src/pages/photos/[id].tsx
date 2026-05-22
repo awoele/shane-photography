@@ -71,7 +71,7 @@ const PhotoPage: NextPage<PhotoPageProps> = ({ photo }) => {
         </nav>
 
         <article className="grid gap-5 py-6 lg:grid-cols-[minmax(0,1fr)_370px] xl:grid-cols-[minmax(0,1fr)_400px]">
-          <figure className="relative mx-[calc(50%-50vw)] w-screen overflow-visible bg-[#11100e] lg:mx-0 lg:max-h-[calc(100vh-8rem)] lg:w-full lg:overflow-y-auto lg:rounded-[18px] lg:border lg:border-white/[0.08]">
+          <figure className="relative mx-[calc(50%-50vw)] w-screen overflow-visible bg-[#11100e] lg:mx-0 lg:flex lg:max-h-[calc(100vh-8rem)] lg:min-h-[calc(100vh-8rem)] lg:w-full lg:items-center lg:overflow-y-auto lg:rounded-[18px] lg:border lg:border-white/[0.08]">
             <img
               src={photo.src}
               alt={photoTitle}

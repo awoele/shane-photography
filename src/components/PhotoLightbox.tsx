@@ -269,7 +269,7 @@ const PhotoLightbox = ({
 
                 <TransformComponent
                   wrapperClass="!h-auto !w-screen !max-w-none lg:!h-full lg:!w-full"
-                  contentClass="!block !h-auto !w-full"
+                  contentClass="!block !h-auto !w-full lg:!flex lg:!min-h-full lg:!items-center"
                   wrapperStyle={{
                     cursor: isZoomed ? 'grab' : 'zoom-in',
                     overflowX: 'hidden',
@@ -277,7 +277,6 @@ const PhotoLightbox = ({
                     touchAction: isZoomed ? 'none' : 'pan-y pinch-zoom',
                   }}
                   contentStyle={{
-                    display: 'block',
                     width: '100%',
                   }}
                 >
