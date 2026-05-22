@@ -54,8 +54,8 @@ const PhotoPage: NextPage<PhotoPageProps> = ({ photo }) => {
   const description = photo.description || AppConfig.description;
   const isPortraitPhoto = photo.height > photo.width;
   const imageClassName = isPortraitPhoto
-    ? 'block h-full w-auto max-w-full object-contain'
-    : 'block h-auto max-h-full w-full object-contain';
+    ? 'mx-auto block h-full w-auto max-w-full object-contain'
+    : 'mx-auto block h-auto max-h-full w-full object-contain';
 
   return (
     <main className="min-h-screen bg-[#18130f] py-5 text-stone-100 antialiased">
