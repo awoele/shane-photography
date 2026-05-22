@@ -16,6 +16,7 @@ import { AppConfig } from '@/utils/AppConfig';
 type IndexProps = {
   photos: Photo[];
   loadError: string;
+  randomSeed: number;
 };
 
 const NAV_LINKS = [
@@ -31,6 +32,8 @@ type CategoryButtonProps = {
   label: string;
   onClick: () => void;
 };
+
+type SortMode = 'random' | 'latest';
 
 const CategoryButton = ({
   active,
@@ -73,6 +76,39 @@ const StatusPanel = ({ title, message }: StatusPanelProps) => (
   </div>
 );
 
+const getRandomScore = (value: string, seed: number) => {
+  let hash = seed % 2147483647;
+
+  for (let index = 0; index < value.length; index += 1) {
+    hash = (hash * 31 + value.charCodeAt(index)) % 2147483647;
+  }
+
+  return hash;
+};
+
+const SortModeButton = ({
+  active,
+  label,
+  onClick,
+}: {
+  active: boolean;
+  label: string;
+  onClick: () => void;
+}) => (
+  <button
+    type="button"
+    aria-pressed={active}
+    onClick={onClick}
+    className={`rounded-full px-4 py-2 text-sm font-medium transition ${
+      active
+        ? 'bg-[#9db6b0] text-[#17110e]'
+        : 'text-stone-400 hover:bg-white/[0.05] hover:text-stone-100'
+    }`}
+  >
+    {label}
+  </button>
+);
+
 export const getServerSideProps: GetServerSideProps<IndexProps> = async ({
   res,
 }) => {
@@ -85,6 +121,7 @@ export const getServerSideProps: GetServerSideProps<IndexProps> = async ({
       props: {
         photos,
         loadError: '',
+        randomSeed: Date.now(),
       },
     };
   } catch (error) {
@@ -95,14 +132,16 @@ export const getServerSideProps: GetServerSideProps<IndexProps> = async ({
           error instanceof Error
             ? error.message
             : 'Could not load remote photo data.',
+        randomSeed: Date.now(),
       },
     };
   }
 };
 
-const Index: NextPage<IndexProps> = ({ photos, loadError }) => {
+const Index: NextPage<IndexProps> = ({ photos, loadError, randomSeed }) => {
   const [activeCategory, setActiveCategory] = useState('all');
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
+  const [sortMode, setSortMode] = useState<SortMode>('random');
 
   const categories = useMemo(() => buildCategoryList(photos), [photos]);
 
@@ -116,13 +155,26 @@ const Index: NextPage<IndexProps> = ({ photos, loadError }) => {
     return counts;
   }, [photos]);
 
+  const randomizedPhotos = useMemo(
+    () =>
+      [...photos].sort(
+        (first, second) =>
+          getRandomScore(first.id, randomSeed) -
+            getRandomScore(second.id, randomSeed) ||
+          first.id.localeCompare(second.id),
+      ),
+    [photos, randomSeed],
+  );
+
+  const orderedPhotos = sortMode === 'random' ? randomizedPhotos : photos;
+
   const visiblePhotos = useMemo(() => {
     if (activeCategory === 'all') {
-      return photos;
+      return orderedPhotos;
     }
 
-    return photos.filter((photo) => photo.category === activeCategory);
-  }, [activeCategory, photos]);
+    return orderedPhotos.filter((photo) => photo.category === activeCategory);
+  }, [activeCategory, orderedPhotos]);
 
   const openLightbox = (index: number) => {
     setLightboxIndex(index);
@@ -179,7 +231,8 @@ const Index: NextPage<IndexProps> = ({ photos, loadError }) => {
             Photography Portfolio
           </h1>
           <p className="mx-auto mt-4 max-w-[520px] text-base leading-7 text-stone-400">
-            Capturing quiet moments through light, composition, and memory.
+            I may never become a great photographer, but I will become a version
+            of myself who has witnessed countless landscapes.
           </p>
         </header>
 
@@ -199,6 +252,21 @@ const Index: NextPage<IndexProps> = ({ photos, loadError }) => {
               onClick={() => setActiveCategory(category)}
             />
           ))}
+        </div>
+
+        <div className="mt-5 flex justify-center">
+          <div className="inline-flex rounded-full bg-[#211b17] p-1 ring-1 ring-white/[0.07]">
+            <SortModeButton
+              active={sortMode === 'random'}
+              label="Random"
+              onClick={() => setSortMode('random')}
+            />
+            <SortModeButton
+              active={sortMode === 'latest'}
+              label="Latest"
+              onClick={() => setSortMode('latest')}
+            />
+          </div>
         </div>
 
         <section className="mt-10">

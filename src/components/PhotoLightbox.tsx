@@ -1,5 +1,11 @@
 /* eslint-disable @next/next/no-img-element */
-import { type ReactNode, useCallback, useEffect, useState } from 'react';
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from 'react';
 import { TransformComponent, TransformWrapper } from 'react-zoom-pan-pinch';
 
 import { PhotoCommentsPanel } from '@/components/PhotoCommentsPanel';
@@ -18,6 +24,8 @@ const MAX_ZOOM = 4;
 const BUTTON_ZOOM_STEP = 0.4;
 const DOUBLE_CLICK_ZOOM_STEP = 1.5;
 const WHEEL_ZOOM_STEP = 0.08;
+const SWIPE_DISTANCE = 58;
+const SWIPE_AXIS_LOCK = 1.25;
 
 const IconButton = ({
   label,
@@ -83,6 +91,7 @@ const PhotoLightbox = ({
 }: PhotoLightboxProps) => {
   const [isZoomed, setIsZoomed] = useState(false);
   const activePhoto = photos[activeIndex];
+  const swipeStart = useRef<{ x: number; y: number } | null>(null);
 
   const goTo = useCallback(
     (offset: number) => {
@@ -123,6 +132,7 @@ const PhotoLightbox = ({
 
   useEffect(() => {
     setIsZoomed(false);
+    swipeStart.current = null;
   }, [activeIndex]);
 
   if (!activePhoto) {
@@ -145,7 +155,50 @@ const PhotoLightbox = ({
           <CloseIcon />
         </IconButton>
 
-        <section className="relative h-[82svh] min-h-[420px] bg-[#11100e] lg:h-full lg:min-h-0 lg:flex-1">
+        <section
+          className="relative h-[82svh] min-h-[420px] bg-[#11100e] lg:h-full lg:min-h-0 lg:flex-1"
+          onTouchStart={(event) => {
+            if (isZoomed || event.touches.length !== 1) {
+              swipeStart.current = null;
+              return;
+            }
+
+            const touch = event.touches.item(0);
+            if (!touch) {
+              return;
+            }
+
+            swipeStart.current = {
+              x: touch.clientX,
+              y: touch.clientY,
+            };
+          }}
+          onTouchEnd={(event) => {
+            if (isZoomed || !swipeStart.current) {
+              swipeStart.current = null;
+              return;
+            }
+
+            const touch = event.changedTouches.item(0);
+            if (!touch) {
+              swipeStart.current = null;
+              return;
+            }
+
+            const deltaX = touch.clientX - swipeStart.current.x;
+            const deltaY = touch.clientY - swipeStart.current.y;
+            swipeStart.current = null;
+
+            if (
+              Math.abs(deltaX) < SWIPE_DISTANCE ||
+              Math.abs(deltaX) < Math.abs(deltaY) * SWIPE_AXIS_LOCK
+            ) {
+              return;
+            }
+
+            goTo(deltaX < 0 ? 1 : -1);
+          }}
+        >
           <div className="absolute left-4 top-4 z-20 rounded-full bg-[#18130f]/75 px-3 py-1 text-xs text-stone-400 ring-1 ring-white/10 backdrop-blur">
             {activeIndex + 1} / {photos.length}
           </div>
@@ -153,7 +206,7 @@ const PhotoLightbox = ({
           <IconButton
             label="Previous photo"
             onClick={() => goTo(-1)}
-            className="absolute left-3 top-1/2 z-20 -translate-y-1/2 sm:left-4"
+            className="absolute left-3 top-1/2 z-20 -translate-y-1/2 max-lg:hidden sm:left-4"
           >
             <ArrowIcon direction="previous" />
           </IconButton>
@@ -216,7 +269,7 @@ const PhotoLightbox = ({
 
                 <TransformComponent
                   wrapperClass="!h-full !w-full"
-                  contentClass="!h-full !w-full"
+                  contentClass="!h-full !w-full !px-0 !pb-8 !pt-[72px] lg:!px-[52px] lg:!py-14"
                   wrapperStyle={{
                     cursor: isZoomed ? 'grab' : 'zoom-in',
                     touchAction: isZoomed ? 'none' : 'pan-y pinch-zoom',
@@ -226,7 +279,6 @@ const PhotoLightbox = ({
                     display: 'flex',
                     height: '100%',
                     justifyContent: 'center',
-                    padding: '56px 52px',
                     width: '100%',
                   }}
                 >
@@ -247,7 +299,7 @@ const PhotoLightbox = ({
           <IconButton
             label="Next photo"
             onClick={() => goTo(1)}
-            className="absolute right-3 top-1/2 z-20 -translate-y-1/2 sm:right-4"
+            className="absolute right-3 top-1/2 z-20 -translate-y-1/2 max-lg:hidden sm:right-4"
           >
             <ArrowIcon direction="next" />
           </IconButton>
