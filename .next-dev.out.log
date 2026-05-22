@@ -1,0 +1,13 @@
+
+> next-js-boilerplate@1.0.0 dev
+> next dev
+
+   ▲ Next.js 14.1.0
+   - Local:        http://localhost:3000
+
+   Disabled SWC as replacement for Babel because of custom Babel configuration ".babelrc" https://nextjs.org/docs/messages/swc-disabled
+ ✓ Ready in 2.2s
+ ○ Compiling / ...
+   Using external babel configuration from F:\文件\photos\photo-site\.babelrc
+[styled-jsx] Loading plugin from path: F:\文件\photos\photo-site\node_modules\styled-jsx-plugin-postcss\index.js
+ ✓ Compiled / in 5.9s (753 modules)
