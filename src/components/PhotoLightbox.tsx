@@ -156,7 +156,7 @@ const PhotoLightbox = ({
         </IconButton>
 
         <section
-          className="relative h-[82svh] min-h-[420px] bg-[#11100e] lg:h-full lg:min-h-0 lg:flex-1"
+          className="relative w-screen bg-[#11100e] lg:h-full lg:min-h-0 lg:w-auto lg:flex-1"
           onTouchStart={(event) => {
             if (isZoomed || event.touches.length !== 1) {
               swipeStart.current = null;
@@ -216,8 +216,8 @@ const PhotoLightbox = ({
             initialScale={MIN_ZOOM}
             minScale={MIN_ZOOM}
             maxScale={MAX_ZOOM}
-            centerOnInit
-            centerZoomedOut
+            centerOnInit={false}
+            centerZoomedOut={false}
             limitToBounds
             smooth={false}
             wheel={{ step: WHEEL_ZOOM_STEP }}
@@ -268,17 +268,16 @@ const PhotoLightbox = ({
                 </div>
 
                 <TransformComponent
-                  wrapperClass="!h-full !w-full"
-                  contentClass="!h-full !w-full !px-0 !pb-8 !pt-[72px] lg:!px-[52px] lg:!py-14"
+                  wrapperClass="!h-auto !w-screen !max-w-none lg:!h-full lg:!w-full"
+                  contentClass="!block !h-auto !w-full"
                   wrapperStyle={{
                     cursor: isZoomed ? 'grab' : 'zoom-in',
+                    overflowX: 'hidden',
+                    overflowY: isZoomed ? 'hidden' : 'auto',
                     touchAction: isZoomed ? 'none' : 'pan-y pinch-zoom',
                   }}
                   contentStyle={{
-                    alignItems: 'center',
-                    display: 'flex',
-                    height: '100%',
-                    justifyContent: 'center',
+                    display: 'block',
                     width: '100%',
                   }}
                 >
@@ -289,7 +288,7 @@ const PhotoLightbox = ({
                     draggable={false}
                     loading="eager"
                     decoding="async"
-                    className="max-h-full max-w-full select-none object-contain"
+                    className="block h-auto w-full max-w-none select-none object-contain"
                   />
                 </TransformComponent>
               </>

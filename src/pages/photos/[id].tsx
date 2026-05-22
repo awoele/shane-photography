@@ -54,10 +54,10 @@ const PhotoPage: NextPage<PhotoPageProps> = ({ photo }) => {
   const description = photo.description || AppConfig.description;
 
   return (
-    <main className="min-h-screen bg-[#18130f] px-4 py-5 text-stone-100 antialiased sm:px-6 lg:px-8">
+    <main className="min-h-screen bg-[#18130f] py-5 text-stone-100 antialiased">
       <Meta title={title} description={description} />
 
-      <div className="mx-auto w-full max-w-[1280px]">
+      <div className="mx-auto w-full max-w-[1280px] px-4 sm:px-6 lg:px-8">
         <nav className="flex h-14 items-center justify-between border-b border-white/[0.07]">
           <Link
             href="/"
@@ -71,16 +71,14 @@ const PhotoPage: NextPage<PhotoPageProps> = ({ photo }) => {
         </nav>
 
         <article className="grid gap-5 py-6 lg:grid-cols-[minmax(0,1fr)_370px] xl:grid-cols-[minmax(0,1fr)_400px]">
-          <figure className="relative flex min-h-[72svh] items-center justify-center overflow-hidden rounded-[18px] border border-white/[0.08] bg-[#11100e] p-4 sm:p-8 lg:min-h-[calc(100vh-8rem)]">
-            <div className="relative inline-flex max-h-full max-w-full items-center justify-center">
-              <img
-                src={photo.src}
-                alt={photoTitle}
-                loading="eager"
-                decoding="async"
-                className="max-h-[calc(100vh-9rem)] max-w-full object-contain"
-              />
-            </div>
+          <figure className="relative mx-[calc(50%-50vw)] w-screen overflow-visible bg-[#11100e] lg:mx-0 lg:max-h-[calc(100vh-8rem)] lg:w-full lg:overflow-y-auto lg:rounded-[18px] lg:border lg:border-white/[0.08]">
+            <img
+              src={photo.src}
+              alt={photoTitle}
+              loading="eager"
+              decoding="async"
+              className="block h-auto w-full max-w-none object-contain"
+            />
           </figure>
 
           <aside className="flex min-h-[520px] flex-col overflow-hidden rounded-[18px] border border-white/[0.08] bg-[#1d1915] lg:sticky lg:top-6 lg:max-h-[calc(100vh-3rem)]">
