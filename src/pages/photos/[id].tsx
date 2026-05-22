@@ -52,6 +52,10 @@ const PhotoPage: NextPage<PhotoPageProps> = ({ photo }) => {
   const photoTitle = getPhotoTitle(photo);
   const title = `${photoTitle} | ${AppConfig.site_name}`;
   const description = photo.description || AppConfig.description;
+  const isPortraitPhoto = photo.height > photo.width;
+  const imageClassName = isPortraitPhoto
+    ? 'block h-full w-auto max-w-full object-contain'
+    : 'block h-auto max-h-full w-full object-contain';
 
   return (
     <main className="min-h-screen bg-[#18130f] py-5 text-stone-100 antialiased">
@@ -71,13 +75,13 @@ const PhotoPage: NextPage<PhotoPageProps> = ({ photo }) => {
         </nav>
 
         <article className="grid gap-5 py-6 lg:grid-cols-[minmax(0,1fr)_370px] xl:grid-cols-[minmax(0,1fr)_400px]">
-          <figure className="relative mx-[calc(50%-50vw)] w-screen overflow-visible bg-[#11100e] lg:mx-0 lg:flex lg:max-h-[calc(100vh-8rem)] lg:min-h-[calc(100vh-8rem)] lg:w-full lg:items-center lg:overflow-y-auto lg:rounded-[18px] lg:border lg:border-white/[0.08]">
+          <figure className="relative mx-[calc(50%-50vw)] flex h-[82svh] w-screen items-center justify-center overflow-hidden bg-[#11100e] lg:mx-0 lg:h-[calc(100vh-8rem)] lg:w-full lg:rounded-[18px] lg:border lg:border-white/[0.08]">
             <img
               src={photo.src}
               alt={photoTitle}
               loading="eager"
               decoding="async"
-              className="block h-auto w-full max-w-none object-contain"
+              className={imageClassName}
             />
           </figure>
 

@@ -139,6 +139,11 @@ const PhotoLightbox = ({
     return null;
   }
 
+  const isPortraitPhoto = activePhoto.height > activePhoto.width;
+  const imageClassName = isPortraitPhoto
+    ? 'mx-auto block h-full w-auto max-w-full select-none object-contain'
+    : 'mx-auto block h-auto max-h-full w-full select-none object-contain';
+
   return (
     <div
       className="bg-[#090706]/88 fixed inset-0 z-50 overflow-y-auto text-stone-100 backdrop-blur-md lg:flex lg:items-center lg:justify-center lg:p-4"
@@ -156,7 +161,7 @@ const PhotoLightbox = ({
         </IconButton>
 
         <section
-          className="relative w-screen bg-[#11100e] lg:h-full lg:min-h-0 lg:w-auto lg:flex-1"
+          className="relative h-[82svh] min-h-[420px] w-screen bg-[#11100e] lg:h-full lg:min-h-0 lg:w-auto lg:flex-1"
           onTouchStart={(event) => {
             if (isZoomed || event.touches.length !== 1) {
               swipeStart.current = null;
@@ -268,15 +273,17 @@ const PhotoLightbox = ({
                 </div>
 
                 <TransformComponent
-                  wrapperClass="!h-auto !w-screen !max-w-none lg:!h-full lg:!w-full"
-                  contentClass="!block !h-auto !w-full lg:!flex lg:!min-h-full lg:!items-center"
+                  wrapperClass="!h-full !w-screen !max-w-none lg:!w-full"
+                  contentClass="!flex !h-full !w-full !items-center !justify-center"
                   wrapperStyle={{
                     cursor: isZoomed ? 'grab' : 'zoom-in',
                     overflowX: 'hidden',
-                    overflowY: isZoomed ? 'hidden' : 'auto',
+                    overflowY: 'hidden',
                     touchAction: isZoomed ? 'none' : 'pan-y pinch-zoom',
                   }}
                   contentStyle={{
+                    alignItems: 'center',
+                    justifyContent: 'center',
                     width: '100%',
                   }}
                 >
@@ -287,7 +294,7 @@ const PhotoLightbox = ({
                     draggable={false}
                     loading="eager"
                     decoding="async"
-                    className="block h-auto w-full max-w-none select-none object-contain"
+                    className={imageClassName}
                   />
                 </TransformComponent>
               </>
