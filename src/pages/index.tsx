@@ -35,6 +35,9 @@ type CategoryButtonProps = {
 
 type SortMode = 'random' | 'latest';
 
+const createRandomSeed = () =>
+  Date.now() + Math.floor(Math.random() * 2147483647);
+
 const CategoryButton = ({
   active,
   count,
@@ -142,7 +145,7 @@ export const getServerSideProps: GetServerSideProps<IndexProps> = async ({
       props: {
         photos,
         loadError: '',
-        randomSeed: Date.now(),
+        randomSeed: createRandomSeed(),
       },
     };
   } catch (error) {
@@ -153,16 +156,21 @@ export const getServerSideProps: GetServerSideProps<IndexProps> = async ({
           error instanceof Error
             ? error.message
             : 'Could not load remote photo data.',
-        randomSeed: Date.now(),
+        randomSeed: createRandomSeed(),
       },
     };
   }
 };
 
-const Index: NextPage<IndexProps> = ({ photos, loadError, randomSeed }) => {
+const Index: NextPage<IndexProps> = ({
+  photos,
+  loadError,
+  randomSeed: initialRandomSeed,
+}) => {
   const [activeCategory, setActiveCategory] = useState('all');
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
   const [sortMode, setSortMode] = useState<SortMode>('random');
+  const [randomSeed, setRandomSeed] = useState(initialRandomSeed);
 
   const categories = useMemo(() => buildCategoryList(photos), [photos]);
 
@@ -197,6 +205,15 @@ const Index: NextPage<IndexProps> = ({ photos, loadError, randomSeed }) => {
 
   const closeLightbox = () => {
     setLightboxIndex(null);
+  };
+
+  const showRandomOrder = () => {
+    setRandomSeed(createRandomSeed());
+    setSortMode('random');
+  };
+
+  const showLatestOrder = () => {
+    setSortMode('latest');
   };
 
   return (
@@ -274,12 +291,12 @@ const Index: NextPage<IndexProps> = ({ photos, loadError, randomSeed }) => {
             <SortModeButton
               active={sortMode === 'random'}
               label="Random"
-              onClick={() => setSortMode('random')}
+              onClick={showRandomOrder}
             />
             <SortModeButton
               active={sortMode === 'latest'}
               label="Latest"
-              onClick={() => setSortMode('latest')}
+              onClick={showLatestOrder}
             />
           </div>
         </div>
