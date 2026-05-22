@@ -76,14 +76,35 @@ const StatusPanel = ({ title, message }: StatusPanelProps) => (
   </div>
 );
 
-const getRandomScore = (value: string, seed: number) => {
-  let hash = seed % 2147483647;
+const createSeededRandom = (seed: number) => {
+  let state = seed % 2147483647;
 
-  for (let index = 0; index < value.length; index += 1) {
-    hash = (hash * 31 + value.charCodeAt(index)) % 2147483647;
+  if (state <= 0) {
+    state += 2147483646;
   }
 
-  return hash;
+  return () => {
+    state = (state * 48271) % 2147483647;
+    return state / 2147483647;
+  };
+};
+
+const shufflePhotos = (photos: Photo[], seed: number) => {
+  const shuffled = [...photos];
+  const random = createSeededRandom(seed);
+
+  for (let index = shuffled.length - 1; index > 0; index -= 1) {
+    const targetIndex = Math.floor(random() * (index + 1));
+    const currentPhoto = shuffled[index];
+    const targetPhoto = shuffled[targetIndex];
+
+    if (currentPhoto && targetPhoto) {
+      shuffled[index] = targetPhoto;
+      shuffled[targetIndex] = currentPhoto;
+    }
+  }
+
+  return shuffled;
 };
 
 const SortModeButton = ({
@@ -156,13 +177,7 @@ const Index: NextPage<IndexProps> = ({ photos, loadError, randomSeed }) => {
   }, [photos]);
 
   const randomizedPhotos = useMemo(
-    () =>
-      [...photos].sort(
-        (first, second) =>
-          getRandomScore(first.id, randomSeed) -
-            getRandomScore(second.id, randomSeed) ||
-          first.id.localeCompare(second.id),
-      ),
+    () => shufflePhotos(photos, randomSeed),
     [photos, randomSeed],
   );
 
