@@ -47,6 +47,20 @@ type UploadUrlResponse =
       error: string;
     };
 
+type ProcessIncomingResponse = {
+  detail?: unknown;
+  error?: string;
+  failed?: number;
+  processed?: number;
+  scanned?: number;
+  status?: number;
+};
+
+type ApiErrorResponse = {
+  detail?: unknown;
+  error: string;
+};
+
 const inputClassName =
   'w-full rounded-xl border border-white/[0.08] bg-[#211b17] px-4 py-3 text-base text-stone-100 outline-none transition placeholder:text-stone-600 focus:border-[#9db6b0]/70 focus:ring-2 focus:ring-[#9db6b0]/20';
 
@@ -106,10 +120,17 @@ const uploadFileToSignedUrl = (
 
 const getErrorMessage = async (response: Response) => {
   try {
-    const data = (await response.json()) as UploadUrlResponse;
+    const data = (await response.json()) as
+      | ApiErrorResponse
+      | ProcessIncomingResponse
+      | UploadUrlResponse;
 
     if ('error' in data) {
-      return data.error;
+      const errorData = data as ApiErrorResponse;
+
+      return errorData.detail
+        ? `${errorData.error} ${JSON.stringify(errorData.detail)}`
+        : errorData.error;
     }
   } catch (_error) {
     // The response may not be JSON if the request fails before reaching Next.js.
@@ -130,6 +151,11 @@ const UploadPage = () => {
   const [errorMessage, setErrorMessage] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
   const [uploadedObjectPath, setUploadedObjectPath] = useState('');
+  const [autoProcess, setAutoProcess] = useState(false);
+  const [canProcessIncoming, setCanProcessIncoming] = useState(false);
+  const [isProcessingIncoming, setIsProcessingIncoming] = useState(false);
+  const [processMessage, setProcessMessage] = useState('');
+  const [processErrorMessage, setProcessErrorMessage] = useState('');
 
   const selectedContentType = useMemo(
     () => (file ? inferContentType(file) : ''),
@@ -144,6 +170,55 @@ const UploadPage = () => {
     setErrorMessage('');
     setSuccessMessage('');
     setUploadedObjectPath('');
+    setCanProcessIncoming(false);
+    setProcessMessage('');
+    setProcessErrorMessage('');
+  };
+
+  const processIncoming = async (passwordValue = password.trim()) => {
+    if (!passwordValue) {
+      setProcessErrorMessage('Enter the admin password first.');
+      return;
+    }
+
+    setIsProcessingIncoming(true);
+    setProcessMessage('正在处理');
+    setProcessErrorMessage('');
+
+    try {
+      const response = await fetch('/api/process-incoming/', {
+        body: JSON.stringify({
+          password: passwordValue,
+        }),
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        method: 'POST',
+      });
+
+      if (!response.ok) {
+        throw new Error(await getErrorMessage(response));
+      }
+
+      const data = (await response.json()) as ProcessIncomingResponse;
+      const processed = data.processed ?? 0;
+      const failed = data.failed ?? 0;
+      const scanned = data.scanned ?? processed + failed;
+
+      setProcessMessage(
+        `处理成功：扫描 ${scanned} 张，入库 ${processed} 张，失败 ${failed} 张。`,
+      );
+      setCanProcessIncoming(false);
+    } catch (error) {
+      setProcessMessage('');
+      setProcessErrorMessage(
+        error instanceof Error
+          ? `处理失败：${error.message}`
+          : '处理失败：请稍后重试。',
+      );
+    } finally {
+      setIsProcessingIncoming(false);
+    }
   };
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
@@ -171,8 +246,12 @@ const UploadPage = () => {
     setErrorMessage('');
     setSuccessMessage('');
     setUploadedObjectPath('');
+    setCanProcessIncoming(false);
+    setProcessMessage('');
+    setProcessErrorMessage('');
 
     try {
+      const passwordValue = password.trim();
       const response = await fetch('/api/create-upload-url/', {
         body: JSON.stringify({
           category,
@@ -180,7 +259,7 @@ const UploadPage = () => {
           description,
           filename: file.name,
           location,
-          password: password.trim(),
+          password: passwordValue,
           title,
         }),
         headers: {
@@ -207,9 +286,16 @@ const UploadPage = () => {
       );
 
       setUploadedObjectPath(data.objectPath);
+      setCanProcessIncoming(true);
       setSuccessMessage(
-        'Uploaded successfully. Processing will start automatically.',
+        autoProcess
+          ? 'Uploaded successfully. Processing will start automatically.'
+          : 'Uploaded successfully. You can now process it into the gallery.',
       );
+
+      if (autoProcess) {
+        await processIncoming(passwordValue);
+      }
     } catch (error) {
       setErrorMessage(
         error instanceof Error
@@ -315,6 +401,19 @@ const UploadPage = () => {
               />
             </label>
 
+            <label className="flex items-center gap-3 rounded-xl border border-white/[0.08] bg-[#211b17] px-4 py-3 text-sm text-stone-300">
+              <input
+                type="checkbox"
+                checked={autoProcess}
+                onChange={(event) =>
+                  setAutoProcess(event.currentTarget.checked)
+                }
+                disabled={isUploading || isProcessingIncoming}
+                className="size-4 rounded border-white/[0.12] bg-[#18130f] accent-[#9db6b0]"
+              />
+              <span>上传完成后自动处理入库</span>
+            </label>
+
             {isUploading || progress > 0 ? (
               <div className="space-y-2">
                 <div className="h-2 overflow-hidden rounded-full bg-white/[0.08]">
@@ -344,9 +443,32 @@ const UploadPage = () => {
               </div>
             ) : null}
 
+            {canProcessIncoming ? (
+              <button
+                type="button"
+                onClick={() => processIncoming()}
+                disabled={isUploading || isProcessingIncoming}
+                className="w-full rounded-full border border-[#9db6b0]/35 px-5 py-3 text-base font-semibold text-[#c9d8d4] transition hover:bg-[#9db6b0]/10 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {isProcessingIncoming ? '正在处理' : '处理入库'}
+              </button>
+            ) : null}
+
+            {processMessage ? (
+              <p className="rounded-xl border border-[#9db6b0]/20 bg-[#9db6b0]/10 px-4 py-3 text-sm leading-6 text-[#c9d8d4]">
+                {processMessage}
+              </p>
+            ) : null}
+
+            {processErrorMessage ? (
+              <p className="rounded-xl border border-red-400/20 bg-red-950/30 px-4 py-3 text-sm leading-6 text-red-200">
+                {processErrorMessage}
+              </p>
+            ) : null}
+
             <button
               type="submit"
-              disabled={isUploading}
+              disabled={isUploading || isProcessingIncoming}
               className="w-full rounded-full bg-[#9db6b0] px-5 py-3.5 text-base font-semibold text-[#17110e] transition hover:bg-[#b3c8c3] disabled:cursor-not-allowed disabled:opacity-60"
             >
               {isUploading ? 'Uploading...' : 'Upload'}
