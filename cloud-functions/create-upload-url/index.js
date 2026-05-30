@@ -30,6 +30,12 @@ const storage = new Storage();
 const toCleanString = (value) =>
   typeof value === 'string' ? value.trim() : '';
 
+const toPositiveInteger = (value) => {
+  const parsed = Number(value);
+
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : '';
+};
+
 const createTimestamp = () => {
   const now = new Date();
   const pad = (value, length = 2) => String(value).padStart(length, '0');
@@ -158,6 +164,8 @@ exports.createUploadUrl = async (req, res) => {
     await bucket.file(metadataPath).save(
       JSON.stringify(
         {
+          batchId: toCleanString(body.batchId),
+          batchIndex: toPositiveInteger(body.batchIndex),
           category,
           title: toCleanString(body.title),
           location: toCleanString(body.location),

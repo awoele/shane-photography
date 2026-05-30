@@ -27,6 +27,8 @@ type AllowedCategory = (typeof ALLOWED_CATEGORIES)[number];
 
 type CreateUploadUrlRequest = {
   adminPassword?: unknown;
+  batchId?: unknown;
+  batchIndex?: unknown;
   category?: unknown;
   contentType?: unknown;
   description?: unknown;
@@ -141,6 +143,9 @@ const handler = async (
   try {
     const functionResponse = await fetch(uploadFunctionUrl, {
       body: JSON.stringify({
+        batchId: toCleanString(body.batchId),
+        batchIndex:
+          typeof body.batchIndex === 'number' ? body.batchIndex : undefined,
         category,
         contentType,
         description: toCleanString(body.description),

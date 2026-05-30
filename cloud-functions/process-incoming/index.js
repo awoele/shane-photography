@@ -395,6 +395,42 @@ const listIncomingImages = async (incomingBucket) => {
     .sort((first, second) => first.name.localeCompare(second.name));
 };
 
+const normalizeObjectPaths = (value) => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .filter((item) => typeof item === 'string')
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .filter((item) => item.startsWith(INCOMING_PREFIX))
+    .filter((item) => IMAGE_EXTENSIONS.test(item))
+    .filter((item) => !item.endsWith('.json'));
+};
+
+const getExplicitIncomingImages = async (incomingBucket, objectPaths) => {
+  const uniquePaths = Array.from(new Set(objectPaths));
+  const files = [];
+
+  for (const objectPath of uniquePaths) {
+    const file = incomingBucket.file(objectPath);
+    // eslint-disable-next-line no-await-in-loop
+    const [exists] = await file.exists();
+
+    if (exists) {
+      files.push(file);
+    } else {
+      files.push({
+        missing: true,
+        name: objectPath,
+      });
+    }
+  }
+
+  return files;
+};
+
 const processOneImage = async ({
   imageFile,
   incomingBucket,
@@ -556,6 +592,7 @@ exports.processIncoming = async (req, res) => {
   const maxItems = Math.max(1, Number(process.env.MAX_ITEMS_PER_RUN) || 20);
   const incomingBucket = storage.bucket(incomingBucketName);
   const publicBucket = storage.bucket(publicBucketName);
+  const requestedObjectPaths = normalizeObjectPaths(req.body && req.body.objectPaths);
   const photos = await readPhotosJson(publicBucket);
   const categories = Array.from(ALLOWED_CATEGORIES);
   const nextNumbersByCategory = {};
@@ -570,13 +607,26 @@ exports.processIncoming = async (req, res) => {
     }),
   );
 
-  const incomingImages = (await listIncomingImages(incomingBucket)).slice(
-    0,
-    maxItems,
-  );
+  const incomingImages =
+    requestedObjectPaths.length > 0
+      ? (await getExplicitIncomingImages(
+          incomingBucket,
+          requestedObjectPaths,
+        )).slice(0, maxItems)
+      : (await listIncomingImages(incomingBucket)).slice(0, maxItems);
   const results = [];
 
   for (const imageFile of incomingImages) {
+    if (imageFile.missing) {
+      results.push({
+        error: 'Incoming object was not found.',
+        image: imageFile.name,
+        status: 'failed',
+      });
+      // eslint-disable-next-line no-continue
+      continue;
+    }
+
     // Serial processing keeps category numbering stable in one function run.
     // eslint-disable-next-line no-await-in-loop
     const result = await processOneImage({
@@ -592,6 +642,7 @@ exports.processIncoming = async (req, res) => {
 
   res.status(200).json({
     failed: results.filter((result) => result.status === 'failed').length,
+    mode: requestedObjectPaths.length > 0 ? 'objectPaths' : 'scan',
     processed: results.filter((result) => result.status === 'processed').length,
     results,
     scanned: incomingImages.length,

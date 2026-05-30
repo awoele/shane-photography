@@ -2,6 +2,7 @@ import type { NextApiRequest, NextApiResponse } from 'next';
 
 type ProcessIncomingRequest = {
   adminPassword?: unknown;
+  objectPaths?: unknown;
   password?: unknown;
 };
 
@@ -33,6 +34,19 @@ const readResponseDetail = async (response: Response) => {
   } catch (_error) {
     return text;
   }
+};
+
+const normalizeObjectPaths = (value: unknown) => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .filter((item): item is string => typeof item === 'string')
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .filter((item) => item.startsWith('incoming/'))
+    .filter((item) => !item.endsWith('.json'));
 };
 
 const handler = async (
@@ -86,8 +100,13 @@ const handler = async (
   }
 
   try {
+    const objectPaths = normalizeObjectPaths(body.objectPaths);
     const functionResponse = await fetch(processFunctionUrl, {
+      body: JSON.stringify({
+        objectPaths,
+      }),
       headers: {
+        'Content-Type': 'application/json',
         'x-process-function-secret': processFunctionSecret,
       },
       method: 'POST',
