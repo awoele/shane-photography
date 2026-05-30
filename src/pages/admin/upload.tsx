@@ -4,13 +4,18 @@ import { useMemo, useState } from 'react';
 import { Meta } from '@/layout/Meta';
 
 const CATEGORIES = [
-  'portrait',
-  'nature',
+  'alex-webb',
   'beauty',
+  'color',
   'cute',
-  'travel',
-  'street',
+  'design',
+  'favourites',
   'mark',
+  'nature',
+  'night',
+  'portrait',
+  'street',
+  'travel',
 ] as const;
 
 const ALLOWED_CONTENT_TYPES = new Set([
@@ -46,6 +51,13 @@ const inputClassName =
   'w-full rounded-xl border border-white/[0.08] bg-[#211b17] px-4 py-3 text-base text-stone-100 outline-none transition placeholder:text-stone-600 focus:border-[#9db6b0]/70 focus:ring-2 focus:ring-[#9db6b0]/20';
 
 const labelClassName = 'text-sm font-medium text-stone-300';
+
+const formatCategoryLabel = (category: string) =>
+  category
+    .split(/[-_\s]+/)
+    .filter(Boolean)
+    .map((word) => `${word.charAt(0).toUpperCase()}${word.slice(1)}`)
+    .join(' ');
 
 const inferContentType = (file: File) => {
   if (ALLOWED_CONTENT_TYPES.has(file.type)) {
@@ -265,7 +277,7 @@ const UploadPage = () => {
               >
                 {CATEGORIES.map((option) => (
                   <option key={option} value={option}>
-                    {option}
+                    {formatCategoryLabel(option)}
                   </option>
                 ))}
               </select>

@@ -1,13 +1,18 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 
 const ALLOWED_CATEGORIES = [
-  'portrait',
-  'nature',
+  'alex-webb',
   'beauty',
+  'color',
   'cute',
-  'travel',
-  'street',
+  'design',
+  'favourites',
   'mark',
+  'nature',
+  'night',
+  'portrait',
+  'street',
+  'travel',
 ] as const;
 
 const ALLOWED_CONTENT_TYPES = new Set([
