@@ -15,13 +15,18 @@ const MAX_INPUT_PIXELS = 500_000_000;
 const IMAGE_EXTENSIONS = /\.(jpe?g|png|webp|heic|heif)$/i;
 
 const ALLOWED_CATEGORIES = new Set([
-  'portrait',
-  'nature',
+  'alex-webb',
   'beauty',
+  'color',
   'cute',
-  'travel',
-  'street',
+  'design',
+  'favourites',
   'mark',
+  'nature',
+  'night',
+  'portrait',
+  'street',
+  'travel',
 ]);
 
 const storage = new Storage();

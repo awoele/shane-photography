@@ -3,13 +3,18 @@ const path = require('node:path');
 const { Storage } = require('@google-cloud/storage');
 
 const ALLOWED_CATEGORIES = [
-  'portrait',
-  'nature',
+  'alex-webb',
   'beauty',
+  'color',
   'cute',
-  'travel',
-  'street',
+  'design',
+  'favourites',
   'mark',
+  'nature',
+  'night',
+  'portrait',
+  'street',
+  'travel',
 ];
 
 const ALLOWED_CONTENT_TYPES = new Set([
