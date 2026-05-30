@@ -21,6 +21,7 @@ const ALLOWED_CONTENT_TYPES = new Set([
 type AllowedCategory = (typeof ALLOWED_CATEGORIES)[number];
 
 type CreateUploadUrlRequest = {
+  adminPassword?: unknown;
   category?: unknown;
   contentType?: unknown;
   description?: unknown;
@@ -81,10 +82,26 @@ const handler = async (
   }
 
   const body = req.body as CreateUploadUrlRequest;
-  const password = toCleanString(body.password);
-  const expectedPassword = process.env.ADMIN_UPLOAD_PASSWORD;
+  const inputPassword = String(
+    body.password ?? body.adminPassword ?? '',
+  ).trim();
+  const expectedPassword = String(
+    process.env.ADMIN_UPLOAD_PASSWORD ?? '',
+  ).trim();
 
-  if (!expectedPassword || password !== expectedPassword) {
+  // eslint-disable-next-line no-console
+  console.log('Upload password debug:', {
+    expectedPasswordLength: expectedPassword.length,
+    hasExpectedPassword: expectedPassword.length > 0,
+    inputPasswordLength: inputPassword.length,
+  });
+
+  if (!expectedPassword) {
+    res.status(500).json({ error: 'ADMIN_UPLOAD_PASSWORD is not configured' });
+    return;
+  }
+
+  if (inputPassword !== expectedPassword) {
     res.status(401).json({ error: 'Invalid admin password.' });
     return;
   }

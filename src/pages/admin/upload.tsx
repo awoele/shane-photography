@@ -168,7 +168,7 @@ const UploadPage = () => {
           description,
           filename: file.name,
           location,
-          password,
+          password: password.trim(),
           title,
         }),
         headers: {
