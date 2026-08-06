@@ -2895,6 +2895,7 @@ const AdminPage: NextPage<AdminPageProps> = ({
               <img
                 src={draggedSortPhoto.thumbnail || draggedSortPhoto.src}
                 alt=""
+                draggable={false}
                 className="size-full object-cover"
               />
             </div>
@@ -2922,7 +2923,8 @@ const AdminPage: NextPage<AdminPageProps> = ({
                   onPointerMove={handleSortPointerMove}
                   onPointerUp={handleSortPointerEnd}
                   onContextMenu={(event) => event.preventDefault()}
-                  className={`group min-w-0 select-none overflow-hidden rounded-lg border bg-white/[0.035] text-left transition touch-pan-y ${
+                  onDragStart={(event) => event.preventDefault()}
+                  className={`group min-w-0 select-none overflow-hidden rounded-lg border bg-white/[0.035] text-left transition touch-pan-y [-webkit-touch-callout:none] ${
                     isDragging
                       ? 'z-10 scale-[1.02] border-[#9db6b0] bg-[#9db6b0]/10 opacity-25 shadow-xl shadow-black/30 touch-none'
                       : 'border-white/[0.08] hover:border-[#9db6b0]/50'
@@ -2932,6 +2934,7 @@ const AdminPage: NextPage<AdminPageProps> = ({
                     <img
                       src={photo.thumbnail || photo.src}
                       alt={photo.title}
+                      draggable={false}
                       loading="lazy"
                       decoding="async"
                       className="size-full object-cover transition duration-200 group-hover:scale-[1.03]"
