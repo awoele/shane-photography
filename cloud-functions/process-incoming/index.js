@@ -10,6 +10,7 @@ const PROCESSED_PREFIX = 'processed/';
 const FAILED_PREFIX = 'failed/';
 const PHOTOS_JSON_PATH = 'data/photos.json';
 const CMS_OVERRIDES_JSON_PATH = 'data/photo-cms-overrides.json';
+const CMS_PROCESSING_JOBS_JSON_PATH = 'data/photo-cms-jobs.json';
 const LARGE_SIZE = 2560;
 const THUMBNAIL_SIZE = 800;
 const MAX_INPUT_PIXELS = 500_000_000;
@@ -573,6 +574,40 @@ const handleCmsMutation = async ({ body, publicBucket, res }) => {
   }
 
   res.status(400).json({ error: `Unsupported CMS action: ${cmsAction}.` });
+};
+
+const handleProcessingJobsMutation = async ({ body, publicBucket, res }) => {
+  const action = toCleanString(body.processingJobsAction) || 'list';
+
+  if (action === 'list') {
+    const jobs = await downloadJson(
+      publicBucket.file(CMS_PROCESSING_JOBS_JSON_PATH),
+      [],
+    );
+
+    res.status(200).json({ jobs: Array.isArray(jobs) ? jobs : [] });
+    return;
+  }
+
+  if (action === 'save') {
+    const jobs = Array.isArray(body.jobs) ? body.jobs : [];
+
+    await publicBucket.file(CMS_PROCESSING_JOBS_JSON_PATH).save(
+      JSON.stringify(jobs, null, 2),
+      {
+        cacheControl: 'no-store, max-age=0',
+        contentType: 'application/json; charset=utf-8',
+        resumable: false,
+      },
+    );
+
+    res.status(200).json({ saved: jobs.length });
+    return;
+  }
+
+  res
+    .status(400)
+    .json({ error: `Unsupported processing jobs action: ${action}.` });
 };
 
 const getExistingMaxNumber = async (publicBucket, photos, category) => {
@@ -1180,6 +1215,11 @@ exports.processIncoming = async (req, res) => {
 
   if (toCleanString(body.cmsAction)) {
     await handleCmsMutation({ body, publicBucket, res });
+    return;
+  }
+
+  if (toCleanString(body.processingJobsAction) || body.processingJobs) {
+    await handleProcessingJobsMutation({ body, publicBucket, res });
     return;
   }
 

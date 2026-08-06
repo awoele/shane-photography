@@ -631,6 +631,23 @@ const callCmsMutationFunction = async (body: Record<string, unknown>) => {
   return data;
 };
 
+const readCloudProcessingJobs = async (): Promise<unknown[]> => {
+  const data = await callCmsMutationFunction({
+    processingJobs: true,
+    processingJobsAction: 'list',
+  });
+
+  return Array.isArray(data.jobs) ? data.jobs : [];
+};
+
+const saveCloudProcessingJobs = async (jobs: CmsProcessingJob[]) => {
+  await callCmsMutationFunction({
+    jobs,
+    processingJobs: true,
+    processingJobsAction: 'save',
+  });
+};
+
 const getCmsMutationCount = (
   data: Record<string, unknown>,
   key: 'deleted' | 'updated',
@@ -645,6 +662,10 @@ const getCmsMutationCount = (
 };
 
 const readCmsJobsFile = async () => {
+  if (shouldUseCloudCms()) {
+    return readCloudProcessingJobs();
+  }
+
   try {
     const text = await readFile(getCmsJobsFilePath(), 'utf8');
     const data: unknown = JSON.parse(text);
@@ -692,6 +713,11 @@ export const saveCmsPhotos = async (photos: CmsPhoto[]) => {
 };
 
 export const saveProcessingJobs = async (jobs: CmsProcessingJob[]) => {
+  if (shouldUseCloudCms()) {
+    await saveCloudProcessingJobs(jobs);
+    return;
+  }
+
   const filePath = getCmsJobsFilePath();
   await mkdir(path.dirname(filePath), { recursive: true });
   await writeFile(
