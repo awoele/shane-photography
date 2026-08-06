@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   applySavedSortOrderToPhotos,
+  getGridSortPointerTarget,
   getVerticalSortPointerTarget,
   movePhotoIdBeforeTarget,
 } from './adminPhotoSort';
@@ -88,6 +89,23 @@ test('getVerticalSortPointerTarget supports fast movement outside visible row bo
     placement: 'after',
     targetId: 'c',
   });
+});
+
+test('getGridSortPointerTarget uses horizontal halves inside a card', () => {
+  const items = [
+    { bottom: 100, id: 'a', left: 0, right: 100, top: 0 },
+    { bottom: 100, id: 'b', left: 120, right: 220, top: 0 },
+    { bottom: 220, id: 'c', left: 0, right: 100, top: 120 },
+  ];
+
+  assert.deepEqual(
+    getGridSortPointerTarget({ items, pointerX: 25, pointerY: 50 }),
+    { placement: 'before', targetId: 'a' },
+  );
+  assert.deepEqual(
+    getGridSortPointerTarget({ items, pointerX: 85, pointerY: 50 }),
+    { placement: 'after', targetId: 'a' },
+  );
 });
 
 test('applySavedSortOrderToPhotos updates only the saved sequence ids', () => {

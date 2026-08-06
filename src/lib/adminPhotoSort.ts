@@ -37,6 +37,59 @@ export type VerticalSortPointerRow = {
   top: number;
 };
 
+export type GridSortPointerItem = {
+  bottom: number;
+  id: string;
+  left: number;
+  right: number;
+  top: number;
+};
+
+export const getGridSortPointerTarget = ({
+  activeId,
+  items,
+  pointerX,
+  pointerY,
+}: {
+  activeId?: string;
+  items: GridSortPointerItem[];
+  pointerX: number;
+  pointerY: number;
+}): { placement: 'after' | 'before'; targetId: string } | null => {
+  const candidates = items.filter((item) => item.id !== activeId);
+
+  if (candidates.length === 0) {
+    return null;
+  }
+
+  const target = candidates.reduce((closest, item) => {
+    const centerX = (item.left + item.right) / 2;
+    const centerY = (item.top + item.bottom) / 2;
+    const distance = (pointerX - centerX) ** 2 + (pointerY - centerY) ** 2;
+    const closestCenterX = (closest.left + closest.right) / 2;
+    const closestCenterY = (closest.top + closest.bottom) / 2;
+    const closestDistance =
+      (pointerX - closestCenterX) ** 2 + (pointerY - closestCenterY) ** 2;
+
+    return distance < closestDistance ? item : closest;
+  });
+  const centerX = (target.left + target.right) / 2;
+  const centerY = (target.top + target.bottom) / 2;
+  const isSameRow = pointerY >= target.top && pointerY <= target.bottom;
+  let placement: 'after' | 'before' = 'before';
+  if (
+    (isSameRow && pointerX >= centerX) ||
+    (!isSameRow && pointerY >= centerY)
+  ) {
+    placement = 'after';
+  }
+
+  return {
+    placement,
+    targetId: target.id,
+  };
+};
+
 export const getVerticalSortPointerTarget = ({
   pointerY,
   rows,

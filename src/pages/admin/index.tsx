@@ -13,7 +13,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Meta } from '@/layout/Meta';
 import {
   applySavedSortOrderToPhotos,
-  getVerticalSortPointerTarget,
+  getGridSortPointerTarget,
   movePhotoIdBeforeTarget,
 } from '@/lib/adminPhotoSort';
 import { comparePhotosByManagedOrder, formatCategoryLabel } from '@/lib/photos';
@@ -729,6 +729,13 @@ const AdminPage: NextPage<AdminPageProps> = ({
   const [sortDraftIds, setSortDraftIds] = useState<string[]>([]);
   const [sortDragId, setSortDragId] = useState('');
   const sortDragIdRef = useRef('');
+  const sortPressTimerRef = useRef<number | null>(null);
+  const sortPointerStartRef = useRef<{
+    id: string;
+    pointerId: number;
+    x: number;
+    y: number;
+  } | null>(null);
   const [uploadPassword, setUploadPassword] = useState('');
   const [uploadItems, setUploadItems] = useState<UploadItem[]>([]);
   const [uploadCategory, setUploadCategory] = useState('portrait');
@@ -1192,9 +1199,39 @@ const AdminPage: NextPage<AdminPageProps> = ({
       return;
     }
 
-    event.preventDefault();
-    event.currentTarget.setPointerCapture(event.pointerId);
-    setActiveSortDragId(photoId);
+    sortPointerStartRef.current = {
+      id: photoId,
+      pointerId: event.pointerId,
+      x: event.clientX,
+      y: event.clientY,
+    };
+
+    const beginDrag = () => {
+      sortPressTimerRef.current = null;
+      event.preventDefault();
+      try {
+        event.currentTarget.setPointerCapture(event.pointerId);
+      } catch (_error) {
+        // The pointer may have ended before a long press timer fired.
+      }
+      setActiveSortDragId(photoId);
+    };
+
+    if (event.pointerType === 'mouse') {
+      beginDrag();
+      return;
+    }
+
+    sortPressTimerRef.current = window.setTimeout(beginDrag, 240);
+  };
+
+  const clearSortPointerState = () => {
+    if (sortPressTimerRef.current !== null) {
+      window.clearTimeout(sortPressTimerRef.current);
+      sortPressTimerRef.current = null;
+    }
+
+    sortPointerStartRef.current = null;
   };
 
   const scrollSortListNearViewportEdge = (pointerY: number) => {
@@ -1211,7 +1248,7 @@ const AdminPage: NextPage<AdminPageProps> = ({
     }
   };
 
-  const moveSortDragToPointer = (pointerY: number) => {
+  const moveSortDragToPointer = (pointerX: number, pointerY: number) => {
     const rows = Array.from(
       document.querySelectorAll<HTMLElement>('[data-sort-photo-id]'),
     )
@@ -1221,12 +1258,19 @@ const AdminPage: NextPage<AdminPageProps> = ({
         return {
           bottom: rect.bottom,
           id: row.dataset.sortPhotoId ?? '',
+          left: rect.left,
+          right: rect.right,
           top: rect.top,
         };
       })
       .filter((row) => row.id);
 
-    const target = getVerticalSortPointerTarget({ pointerY, rows });
+    const target = getGridSortPointerTarget({
+      activeId: sortDragIdRef.current || sortDragId,
+      items: rows,
+      pointerX,
+      pointerY,
+    });
 
     if (target) {
       reorderSortDraft(target.targetId, target.placement);
@@ -1235,12 +1279,21 @@ const AdminPage: NextPage<AdminPageProps> = ({
 
   const handleSortPointerMove = (event: PointerEvent<HTMLButtonElement>) => {
     if (!sortDragIdRef.current && !sortDragId) {
+      const start = sortPointerStartRef.current;
+
+      if (
+        start &&
+        Math.hypot(event.clientX - start.x, event.clientY - start.y) > 10
+      ) {
+        clearSortPointerState();
+      }
+
       return;
     }
 
     event.preventDefault();
     scrollSortListNearViewportEdge(event.clientY);
-    moveSortDragToPointer(event.clientY);
+    moveSortDragToPointer(event.clientX, event.clientY);
   };
 
   const handleSortPointerEnd = (event: PointerEvent<HTMLButtonElement>) => {
@@ -1248,10 +1301,12 @@ const AdminPage: NextPage<AdminPageProps> = ({
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
 
+    clearSortPointerState();
     setActiveSortDragId('');
   };
 
   const resetCategorySort = () => {
+    clearSortPointerState();
     setSortDraftIds(canonicalSortIds);
     setActiveSortDragId('');
   };
@@ -2729,7 +2784,7 @@ const AdminPage: NextPage<AdminPageProps> = ({
           <div className="min-w-0">
             <h2 className="text-lg font-semibold">分类排序</h2>
             <p className="mt-1 max-w-3xl text-sm leading-6 text-stone-400">
-              按住右侧按钮拖动缩略图，设置单个分类里的手动顺序。保存后会从 1 到{' '}
+              按住照片卡片拖动，设置单个分类里的手动顺序。保存后会从 1 到{' '}
               {sortDraftIds.length || 0} 写入
               sortOrder，公开分类页会优先使用这个顺序。
             </p>
@@ -2776,59 +2831,44 @@ const AdminPage: NextPage<AdminPageProps> = ({
         </div>
 
         {sortDraftPhotos.length > 0 ? (
-          <div className="mt-3 space-y-2">
+          <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4 sm:gap-3">
             {sortDraftPhotos.map((photo, index) => {
               const isDragging = sortDragId === photo.id;
 
               return (
-                <article
+                <button
+                  type="button"
                   key={photo.id}
                   data-sort-photo-id={photo.id}
-                  className={`grid grid-cols-[4.5rem_minmax(0,1fr)_4.25rem] items-center gap-3 rounded-lg border bg-white/[0.035] p-2 transition sm:grid-cols-[6rem_minmax(0,1fr)_5rem] sm:p-3 ${
+                  aria-label={`按住拖动排序 ${photo.title}`}
+                  onPointerCancel={handleSortPointerEnd}
+                  onPointerDown={(event) =>
+                    handleSortPointerDown(event, photo.id)
+                  }
+                  onPointerMove={handleSortPointerMove}
+                  onPointerUp={handleSortPointerEnd}
+                  className={`group min-w-0 overflow-hidden rounded-lg border bg-white/[0.035] text-left transition touch-pan-y ${
                     isDragging
-                      ? 'border-[#9db6b0] bg-[#9db6b0]/10 opacity-75'
-                      : 'border-white/[0.08]'
+                      ? 'z-10 scale-[1.02] border-[#9db6b0] bg-[#9db6b0]/10 opacity-75 shadow-xl shadow-black/30'
+                      : 'border-white/[0.08] hover:border-[#9db6b0]/50'
                   }`}
                 >
-                  <div className="relative aspect-[4/5] overflow-hidden rounded-md bg-black">
+                  <div className="relative aspect-[4/3] overflow-hidden bg-black">
                     <img
                       src={photo.thumbnail || photo.src}
                       alt={photo.title}
                       loading="lazy"
                       decoding="async"
-                      className="size-full object-cover"
+                      className="size-full object-cover transition duration-200 group-hover:scale-[1.03]"
                     />
-                    <span className="absolute left-1.5 top-1.5 rounded-full bg-black/60 px-2 py-0.5 text-xs font-semibold text-stone-100 backdrop-blur">
+                    <span className="absolute left-1.5 top-1.5 rounded-full bg-black/60 px-1.5 py-0.5 text-[11px] font-semibold text-stone-100 backdrop-blur">
                       {index + 1}
                     </span>
                   </div>
-                  <div className="min-w-0 space-y-1">
-                    <p className="truncate text-sm font-semibold text-stone-100">
-                      {photo.title}
-                    </p>
-                    <p className="truncate text-xs text-stone-500">
-                      {photo.id}
-                    </p>
-                    <p className="truncate text-xs text-stone-400">
-                      {photo.date || '无日期'} · 排序{' '}
-                      {typeof photo.sortOrder === 'number'
-                        ? photo.sortOrder
-                        : '自动'}
-                    </p>
-                  </div>
-                  <button
-                    type="button"
-                    onPointerCancel={handleSortPointerEnd}
-                    onPointerDown={(event) =>
-                      handleSortPointerDown(event, photo.id)
-                    }
-                    onPointerMove={handleSortPointerMove}
-                    onPointerUp={handleSortPointerEnd}
-                    className="cursor-grab touch-none rounded-full bg-[#9db6b0]/90 px-3 py-2 text-xs font-semibold text-[#17110e] shadow-lg shadow-black/20 transition hover:bg-[#b7cec8] active:cursor-grabbing"
-                  >
-                    按住
-                  </button>
-                </article>
+                  <p className="truncate px-2 py-2 text-xs font-semibold text-stone-100 sm:text-sm">
+                    {photo.title}
+                  </p>
+                </button>
               );
             })}
           </div>
