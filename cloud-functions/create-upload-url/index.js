@@ -28,6 +28,8 @@ const ALLOWED_CONTENT_TYPES = new Set([
 ]);
 
 const storage = new Storage();
+const MAX_CHUNK_BYTES = 4 * 1024 * 1024;
+const MAX_COMPOSE_SOURCES = 32;
 
 const toCleanString = (value) =>
   typeof value === 'string' ? value.trim() : '';
@@ -160,6 +162,179 @@ const isAuthorized = (req) => {
   );
 };
 
+const getHeader = (req, name) => toCleanString(req.get(name));
+
+const isSafeIncomingObjectPath = (value) =>
+  /^incoming\/[a-z0-9-]+\/[a-z0-9._-]+$/i.test(value) &&
+  !value.includes('..') &&
+  !value.endsWith('.json');
+
+const sanitizeUploadId = (value) =>
+  value
+    .toLowerCase()
+    .replace(/[^a-z0-9-]/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 96);
+
+const readRawBody = (req) => {
+  if (Buffer.isBuffer(req.rawBody)) {
+    return req.rawBody;
+  }
+
+  if (Buffer.isBuffer(req.body)) {
+    return req.body;
+  }
+
+  if (typeof req.body === 'string') {
+    return Buffer.from(req.body);
+  }
+
+  return Buffer.alloc(0);
+};
+
+const deleteFilesQuietly = async (bucket, objectNames) => {
+  await Promise.all(
+    objectNames.map((objectName) =>
+      bucket
+        .file(objectName)
+        .delete({ ignoreNotFound: true })
+        .catch(() => undefined),
+    ),
+  );
+};
+
+const composeObjectParts = async ({
+  bucket,
+  contentType,
+  objectPath,
+  sourceNames,
+  uploadId,
+}) => {
+  let currentSourceNames = sourceNames;
+  const intermediateNames = [];
+  let level = 0;
+
+  while (currentSourceNames.length > MAX_COMPOSE_SOURCES) {
+    const nextSourceNames = [];
+
+    for (let index = 0; index < currentSourceNames.length; index += MAX_COMPOSE_SOURCES) {
+      const group = currentSourceNames.slice(index, index + MAX_COMPOSE_SOURCES);
+      const intermediateName = `incoming-chunks/${uploadId}/compose-${level}-${String(
+        nextSourceNames.length,
+      ).padStart(4, '0')}`;
+
+      await bucket.combine(
+        group.map((sourceName) => bucket.file(sourceName)),
+        bucket.file(intermediateName),
+      );
+
+      nextSourceNames.push(intermediateName);
+      intermediateNames.push(intermediateName);
+    }
+
+    currentSourceNames = nextSourceNames;
+    level += 1;
+  }
+
+  await bucket.combine(
+    currentSourceNames.map((sourceName) => bucket.file(sourceName)),
+    bucket.file(objectPath),
+  );
+  await bucket.file(objectPath).setMetadata({
+    contentType,
+  });
+  await deleteFilesQuietly(bucket, [...sourceNames, ...intermediateNames]);
+};
+
+const handleChunkedUpload = async (req, res, bucketName) => {
+  const action = getHeader(req, 'x-upload-action') || 'chunk';
+  const objectPath = getHeader(req, 'x-upload-object-path');
+  const uploadId = sanitizeUploadId(getHeader(req, 'x-upload-id'));
+  const contentType = getHeader(req, 'x-upload-content-type').toLowerCase();
+  const chunkIndex = Number(getHeader(req, 'x-upload-chunk-index'));
+  const totalChunks = Number(getHeader(req, 'x-upload-total-chunks'));
+
+  if (!isSafeIncomingObjectPath(objectPath)) {
+    res.status(400).json({ error: 'Invalid upload object path.' });
+    return true;
+  }
+
+  if (!uploadId) {
+    res.status(400).json({ error: 'Upload ID is required.' });
+    return true;
+  }
+
+  if (!ALLOWED_CONTENT_TYPES.has(contentType)) {
+    res.status(400).json({ error: 'Invalid upload content type.' });
+    return true;
+  }
+
+  if (
+    !Number.isInteger(totalChunks) ||
+    totalChunks <= 0 ||
+    totalChunks > 256
+  ) {
+    res.status(400).json({ error: 'Invalid upload chunk count.' });
+    return true;
+  }
+
+  const bucket = storage.bucket(bucketName);
+
+  if (action === 'complete') {
+    const sourceNames = Array.from({ length: totalChunks }, (_, index) =>
+      `incoming-chunks/${uploadId}/part-${String(index).padStart(6, '0')}`,
+    );
+
+    try {
+      await composeObjectParts({
+        bucket,
+        contentType,
+        objectPath,
+        sourceNames,
+        uploadId,
+      });
+
+      res.status(200).json({ ok: true });
+    } catch (error) {
+      console.error('Could not complete chunked upload.', error);
+      res.status(500).json({ error: 'Could not complete chunked upload.' });
+    }
+
+    return true;
+  }
+
+  if (!Number.isInteger(chunkIndex) || chunkIndex < 0 || chunkIndex >= totalChunks) {
+    res.status(400).json({ error: 'Invalid upload chunk index.' });
+    return true;
+  }
+
+  const body = readRawBody(req);
+
+  if (body.length === 0 || body.length > MAX_CHUNK_BYTES) {
+    res.status(413).json({ error: 'Upload chunk is empty or too large.' });
+    return true;
+  }
+
+  const chunkName = `incoming-chunks/${uploadId}/part-${String(chunkIndex).padStart(
+    6,
+    '0',
+  )}`;
+
+  try {
+    await bucket.file(chunkName).save(body, {
+      contentType: 'application/octet-stream',
+      resumable: false,
+    });
+
+    res.status(200).json({ ok: true });
+  } catch (error) {
+    console.error('Could not save upload chunk.', error);
+    res.status(500).json({ error: 'Could not save upload chunk.' });
+  }
+
+  return true;
+};
+
 exports.createUploadUrl = async (req, res) => {
   if (req.method === 'OPTIONS') {
     res.status(204).send('');
@@ -177,6 +352,12 @@ exports.createUploadUrl = async (req, res) => {
   }
 
   const bucketName = process.env.INCOMING_BUCKET || 'shane-photos-incoming';
+
+  if (getHeader(req, 'x-upload-action')) {
+    await handleChunkedUpload(req, res, bucketName);
+    return;
+  }
+
   const body = req.body || {};
   const filename = toCleanString(body.filename);
   const contentType = toCleanString(body.contentType).toLowerCase();

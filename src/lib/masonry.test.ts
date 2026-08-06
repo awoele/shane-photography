@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { buildMasonryColumns, getMasonryColumnCount } from './masonry';
+import {
+  buildMasonryColumns,
+  getMasonryColumnCount,
+  getMasonryColumnKey,
+} from './masonry';
 import type { Photo } from './photos';
 
 const buildPhoto = (id: string, width = 1600, height = 1200): Photo => ({
@@ -27,8 +31,8 @@ const buildPhoto = (id: string, width = 1600, height = 1200): Photo => ({
 describe('masonry layout helpers', () => {
   it('chooses enough columns to fill wide gallery rows', () => {
     assert.equal(getMasonryColumnCount(1920, 15), 6);
-    assert.equal(getMasonryColumnCount(1400, 15), 5);
-    assert.equal(getMasonryColumnCount(900, 15), 3);
+    assert.equal(getMasonryColumnCount(1400, 15), 6);
+    assert.equal(getMasonryColumnCount(900, 15), 4);
   });
 
   it('never creates empty columns when there are fewer photos than slots', () => {
@@ -58,5 +62,10 @@ describe('masonry layout helpers', () => {
       photos.length,
     );
     assert.ok(columns.every((column) => column.photos.length > 0));
+  });
+
+  it('keeps column keys independent from photo content during responsive reflow', () => {
+    assert.equal(getMasonryColumnKey(0), 'masonry-column-0');
+    assert.equal(getMasonryColumnKey(1), 'masonry-column-1');
   });
 });

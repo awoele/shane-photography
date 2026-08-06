@@ -124,6 +124,7 @@ export type AfilmoryPhotoManifestItem = {
   title: string;
   dateTaken: string;
   tags: string[];
+  originalCategory?: string;
   description: string;
   originalUrl: string;
   format: string;
@@ -136,6 +137,7 @@ export type AfilmoryPhotoManifestItem = {
   s3Key: string;
   lastModified: string;
   size: number;
+  sortOrder?: number;
   digest?: string;
   exif: AfilmoryPickedExif | null;
   toneAnalysis: AfilmoryToneAnalysis | null;

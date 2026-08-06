@@ -25,7 +25,7 @@ const handler = async (
 ) => {
   if (!['GET', 'POST'].includes(request.method ?? '')) {
     response.setHeader('Allow', 'GET, POST');
-    response.status(405).json({ error: 'Method not allowed.' });
+    response.status(405).json({ error: '请求方法不允许。' });
     return;
   }
 
@@ -55,7 +55,7 @@ const handler = async (
     const filename = toStringValue(record.filename);
 
     if (!id || !filename) {
-      response.status(400).json({ error: 'Job id and filename are required.' });
+      response.status(400).json({ error: '缺少任务 ID 或文件名。' });
       return;
     }
 
@@ -72,10 +72,7 @@ const handler = async (
     response.status(200).json({ job });
   } catch (error) {
     response.status(500).json({
-      error:
-        error instanceof Error
-          ? error.message
-          : 'Could not update processing queue.',
+      error: error instanceof Error ? error.message : '无法更新处理队列。',
     });
   }
 };

@@ -13,6 +13,9 @@ import type {
 } from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { TransformComponent, TransformWrapper } from 'react-zoom-pan-pinch';
+import type { Swiper as SwiperInstance } from 'swiper';
+import { Virtual } from 'swiper/modules';
+import { Swiper, SwiperSlide } from 'swiper/react';
 
 import { PhotoCommentsPanel } from '@/components/PhotoCommentsPanel';
 import { Meta } from '@/layout/Meta';
@@ -30,23 +33,49 @@ import {
 } from '@/lib/afilmoryDetail';
 import type { AfilmoryPhotoManifestItem } from '@/lib/afilmoryTypes';
 import {
+  clearPreviousDetailBackgroundState,
+  createDetailBackgroundState,
+  resolveDetailBackgroundState,
+} from '@/lib/detailBackground';
+import {
+  clearPreviousDetailImageDisplay,
   createDetailImageState,
   resolveDetailImageStateForRender,
 } from '@/lib/detailImageState';
+import { createDetailImagePreloadLinks } from '@/lib/detailPreloadPlan';
+import {
+  getDetailViewerNeighborIndex,
+  resolveDetailViewerIndex,
+  shouldReplaceDetailViewerUrl,
+} from '@/lib/detailViewerState';
+import {
+  GALLERY_DETAIL_TRANSITION_DURATION_MS,
+  GALLERY_DETAIL_TRANSITION_STORAGE_KEY,
+  type GalleryDetailTransitionRect,
+  getContainedImageRect,
+  readGalleryDetailTransitionPayload,
+} from '@/lib/galleryDetailTransition';
+import { isRenderableImageComplete } from '@/lib/imageLoadState';
+import {
+  getMobileDetailDrawerButtonBottom,
+  shouldShowMobileDetailDrawerButton,
+} from '@/lib/mobileDetailDrawerEntry';
 import {
   buildPhotoDetailHref,
   normalizeInternalReturnHref,
+  shouldHardNavigateAfterClientRouteFailure,
+  shouldUseBrowserHistoryForReturn,
 } from '@/lib/navigation';
 import { getPhotoTitle, type Photo } from '@/lib/photos';
+import { PUBLIC_GALLERY_CACHE_CONTROL } from '@/lib/server/cacheHeaders';
 import { AppConfig } from '@/utils/AppConfig';
 
 type PhotoPageProps = {
   activeIndex: number;
-  filmstripPhotos: Photo[];
-  nextPhoto: Photo | null;
   photo: Photo;
   photoManifest: AfilmoryPhotoManifestItem;
-  previousPhoto: Photo | null;
+  photoManifests: AfilmoryPhotoManifestItem[];
+  photos: Photo[];
   totalPhotos: number;
 };
 
@@ -62,11 +91,20 @@ type FilmstripPreview = {
   title: string;
 };
 
+type DetailEntryTransition = {
+  alt: string;
+  imageSrc: string;
+  phase: 'start' | 'end' | 'fade';
+  rect: GalleryDetailTransitionRect;
+};
+
 type TouchPoint = {
   time: number;
   x: number;
   y: number;
 };
+
+type ResetDetailTransform = (animationTime?: number) => void;
 
 const ArrowLeftIcon = ({ className = '' }: { className?: string }) => (
   <svg
@@ -82,6 +120,26 @@ const ArrowLeftIcon = ({ className = '' }: { className?: string }) => (
     <path d="m15 18-6-6 6-6" />
   </svg>
 );
+
+const DetailTransformResetter = ({
+  photoId,
+  resetTransform,
+}: {
+  photoId: string;
+  resetTransform: ResetDetailTransform;
+}) => {
+  const resetTransformRef = useRef(resetTransform);
+
+  useEffect(() => {
+    resetTransformRef.current = resetTransform;
+  }, [resetTransform]);
+
+  useEffect(() => {
+    resetTransformRef.current(0);
+  }, [photoId]);
+
+  return null;
+};
 
 const ArrowRightIcon = ({ className = '' }: { className?: string }) => (
   <svg
@@ -202,19 +260,75 @@ const MAX_DETAIL_ZOOM = 5;
 const DETAIL_WHEEL_ZOOM_STEP = 0.08;
 const DETAIL_DOUBLE_CLICK_ZOOM_STEP = 1.6;
 const DETAIL_IMAGE_PROGRESS_FALLBACK_MAX = 92;
+const DETAIL_BACKGROUND_TRANSITION_MS = 280;
 const MOBILE_INFO_SWIPE_DISTANCE = 58;
 const MOBILE_INSPECTOR_DRAG_CLOSE_DISTANCE = 52;
 const MOBILE_INSPECTOR_DRAG_EXPAND_DISTANCE = 36;
 const MOBILE_INSPECTOR_SWIPE_VELOCITY = 0.42;
-const MOBILE_PHOTO_SWIPE_DISTANCE = 64;
-
-const clampProgress = (value: number) =>
-  Math.min(100, Math.max(0, Math.round(value)));
 
 const loadedDetailImageSources = new Set<string>();
+const pendingDetailImagePreloads = new Map<string, Promise<void>>();
+const retainedDetailImagePreloads = new Map<string, HTMLImageElement>();
 
 const isDetailImageSourceReady = (src: string) =>
   Boolean(src) && loadedDetailImageSources.has(src);
+
+const markDetailImageSourceReady = (src: string) => {
+  if (src) {
+    loadedDetailImageSources.add(src);
+  }
+};
+
+const decodeDetailImage = async (image: HTMLImageElement) => {
+  if (typeof image.decode !== 'function') {
+    return;
+  }
+
+  await image.decode().catch(() => undefined);
+};
+
+const preloadDetailImageSource = async (src: string, timeoutMs = 220) => {
+  if (!src || isDetailImageSourceReady(src) || typeof window === 'undefined') {
+    return;
+  }
+
+  let preload = pendingDetailImagePreloads.get(src);
+
+  if (!preload) {
+    const image = new window.Image();
+
+    retainedDetailImagePreloads.set(src, image);
+    preload = new Promise<void>((resolve) => {
+      const finish = async () => {
+        await decodeDetailImage(image);
+        markDetailImageSourceReady(src);
+        resolve();
+      };
+
+      image.onload = () => {
+        finish().catch(resolve);
+      };
+      image.onerror = () => resolve();
+      image.decoding = 'async';
+      image.src = src;
+
+      if (isRenderableImageComplete(image)) {
+        finish().catch(resolve);
+      }
+    }).finally(() => {
+      retainedDetailImagePreloads.delete(src);
+      pendingDetailImagePreloads.delete(src);
+    });
+
+    pendingDetailImagePreloads.set(src, preload);
+  }
+
+  const timeout = new Promise<void>((resolve) => {
+    window.setTimeout(resolve, timeoutMs);
+  });
+
+  await Promise.race([preload, timeout]);
+};
 
 const getMobileInspectorHeights = () => {
   const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
@@ -238,157 +352,168 @@ const useDetailImageLoader = (src: string, placeholderSrc?: string) => {
   );
 
   useEffect(() => {
-    let objectUrl = '';
     let fallbackTimer: number | undefined;
     let isActive = true;
+    const sourceReady = isDetailImageSourceReady(src);
     const startingState = createDetailImageState({
       placeholderSrc,
-      sourceReady: isDetailImageSourceReady(src),
+      sourceReady,
       src,
     });
 
-    setImageState(startingState);
+    setImageState((current) =>
+      resolveDetailImageStateForRender({
+        current,
+        placeholderSrc,
+        sourceReady,
+        src,
+      }),
+    );
 
     if (!src || typeof window === 'undefined' || !startingState.loading) {
       return undefined;
     }
 
     const cachedImage = new window.Image();
-    cachedImage.src = src;
+    let hasFinished = false;
 
-    if (cachedImage.complete && cachedImage.naturalWidth > 0) {
-      loadedDetailImageSources.add(src);
-      setImageState(
-        createDetailImageState({
+    const finishLoading = () => {
+      if (!isActive || hasFinished) {
+        return;
+      }
+
+      hasFinished = true;
+
+      if (fallbackTimer) {
+        window.clearInterval(fallbackTimer);
+        fallbackTimer = undefined;
+      }
+
+      markDetailImageSourceReady(src);
+      setImageState((current) =>
+        resolveDetailImageStateForRender({
+          current,
           placeholderSrc,
           sourceReady: true,
           src,
         }),
       );
+    };
 
-      return undefined;
+    const failOpen = () => {
+      if (!isActive) {
+        return;
+      }
+
+      if (fallbackTimer) {
+        window.clearInterval(fallbackTimer);
+        fallbackTimer = undefined;
+      }
+
+      setImageState({
+        displaySrc: src,
+        loading: false,
+        previousDisplaySrc: '',
+        progress: 100,
+        source: src,
+      });
+    };
+
+    const decodeAndFinishLoading = () => {
+      decodeDetailImage(cachedImage).then(finishLoading, finishLoading);
+    };
+
+    cachedImage.onload = decodeAndFinishLoading;
+    cachedImage.onerror = failOpen;
+    cachedImage.decoding = 'async';
+    cachedImage.src = src;
+
+    const isAlreadyComplete = isRenderableImageComplete(cachedImage);
+
+    if (isAlreadyComplete) {
+      decodeAndFinishLoading();
     }
 
-    const xhr = new XMLHttpRequest();
-    xhr.open('GET', src, true);
-    xhr.responseType = 'blob';
+    if (!isAlreadyComplete) {
+      fallbackTimer = window.setInterval(() => {
+        setImageState((current) => {
+          if (
+            !current.loading ||
+            current.progress >= DETAIL_IMAGE_PROGRESS_FALLBACK_MAX
+          ) {
+            return current;
+          }
 
-    fallbackTimer = window.setInterval(() => {
-      setImageState((current) => {
-        if (
-          !current.loading ||
-          current.progress >= DETAIL_IMAGE_PROGRESS_FALLBACK_MAX
-        ) {
-          return current;
-        }
-
-        return {
-          ...current,
-          progress: Math.min(
-            DETAIL_IMAGE_PROGRESS_FALLBACK_MAX,
-            current.progress + 2,
-          ),
-        };
-      });
-    }, 420);
-
-    xhr.onprogress = (event) => {
-      if (!isActive || !event.lengthComputable || event.total <= 0) {
-        return;
-      }
-
-      if (fallbackTimer) {
-        window.clearInterval(fallbackTimer);
-        fallbackTimer = undefined;
-      }
-
-      setImageState((current) => ({
-        ...current,
-        loading: true,
-        progress: Math.min(
-          99,
-          clampProgress((event.loaded / event.total) * 100),
-        ),
-      }));
-    };
-
-    xhr.onload = () => {
-      if (!isActive) {
-        return;
-      }
-
-      if (fallbackTimer) {
-        window.clearInterval(fallbackTimer);
-        fallbackTimer = undefined;
-      }
-
-      if (
-        xhr &&
-        xhr.status >= 200 &&
-        xhr.status < 300 &&
-        xhr.response instanceof Blob
-      ) {
-        loadedDetailImageSources.add(src);
-        objectUrl = window.URL.createObjectURL(xhr.response);
-        setImageState({
-          displaySrc: objectUrl,
-          loading: false,
-          progress: 100,
-          source: src,
+          return {
+            ...current,
+            progress: Math.min(
+              DETAIL_IMAGE_PROGRESS_FALLBACK_MAX,
+              current.progress + 2,
+            ),
+          };
         });
-        return;
-      }
-
-      loadedDetailImageSources.add(src);
-      setImageState({
-        displaySrc: src,
-        loading: false,
-        progress: 100,
-        source: src,
-      });
-    };
-
-    xhr.onerror = () => {
-      if (!isActive) {
-        return;
-      }
-
-      if (fallbackTimer) {
-        window.clearInterval(fallbackTimer);
-        fallbackTimer = undefined;
-      }
-
-      setImageState({
-        displaySrc: src,
-        loading: false,
-        progress: 100,
-        source: src,
-      });
-    };
-
-    xhr.send();
+      }, 420);
+    }
 
     return () => {
       isActive = false;
+      cachedImage.onload = null;
+      cachedImage.onerror = null;
 
       if (fallbackTimer) {
         window.clearInterval(fallbackTimer);
-      }
-
-      xhr?.abort();
-
-      if (objectUrl) {
-        window.URL.revokeObjectURL(objectUrl);
       }
     };
   }, [placeholderSrc, src]);
 
-  return resolveDetailImageStateForRender({
+  const clearPreviousDisplay = useCallback((paintedSrc: string) => {
+    setImageState((current) =>
+      clearPreviousDetailImageDisplay(current, paintedSrc),
+    );
+  }, []);
+
+  const resolvedImageState = resolveDetailImageStateForRender({
     current: imageState,
     placeholderSrc,
     sourceReady: isDetailImageSourceReady(src),
     src,
   });
+
+  return {
+    ...resolvedImageState,
+    clearPreviousDisplay,
+  };
+};
+
+const useDetailGlassBackground = (src: string) => {
+  const [backgroundState, setBackgroundState] = useState(() =>
+    createDetailBackgroundState(src),
+  );
+
+  useEffect(() => {
+    if (!src) {
+      return undefined;
+    }
+
+    let transitionVersion = 0;
+
+    setBackgroundState((current) => {
+      const next = resolveDetailBackgroundState(current, src);
+
+      transitionVersion = next.version;
+      return next;
+    });
+
+    const timeoutId = window.setTimeout(() => {
+      setBackgroundState((current) =>
+        clearPreviousDetailBackgroundState(current, transitionVersion),
+      );
+    }, DETAIL_BACKGROUND_TRANSITION_MS + 80);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [src]);
+
+  return backgroundState;
 };
 
 const FieldRows = ({ fields }: { fields: AfilmoryDetailField[] }) => (
@@ -535,7 +660,7 @@ export const getServerSideProps: GetServerSideProps<PhotoPageProps> = async ({
   params,
   res,
 }) => {
-  res.setHeader('Cache-Control', 'no-store, max-age=0');
+  res.setHeader('Cache-Control', PUBLIC_GALLERY_CACHE_CONTROL);
 
   const rawId = params?.id;
   const id = Array.isArray(rawId) ? rawId[0] : rawId;
@@ -549,7 +674,7 @@ export const getServerSideProps: GetServerSideProps<PhotoPageProps> = async ({
   const { fetchManagedPhotoSet } = await import(
     '@/lib/server/photoCmsManifest'
   );
-  const photoSet = await fetchManagedPhotoSet({ cacheBust: true });
+  const photoSet = await fetchManagedPhotoSet();
   const { photos } = photoSet;
   const activeIndex = photos.findIndex((item) => item.id === id);
   const photo = activeIndex >= 0 ? photos[activeIndex] : null;
@@ -561,16 +686,15 @@ export const getServerSideProps: GetServerSideProps<PhotoPageProps> = async ({
     };
   }
 
-  const { next, previous } = getCircularPhotoNeighbors(photos, activeIndex);
-
   return {
     props: {
       activeIndex,
-      filmstripPhotos: getFilmstripPhotos(photos, activeIndex, 19),
-      nextPhoto: next,
       photo,
       photoManifest,
-      previousPhoto: previous,
+      photoManifests: photos
+        .map((item) => photoSet.loader.getPhoto(item.id))
+        .filter((item): item is AfilmoryPhotoManifestItem => Boolean(item)),
+      photos,
       totalPhotos: photos.length,
     },
   };
@@ -578,13 +702,21 @@ export const getServerSideProps: GetServerSideProps<PhotoPageProps> = async ({
 
 const PhotoPage: NextPage<PhotoPageProps> = ({
   activeIndex,
-  filmstripPhotos,
-  nextPhoto,
-  photo,
-  photoManifest,
-  previousPhoto,
-  totalPhotos,
+  photo: initialPhoto,
+  photoManifest: initialPhotoManifest,
+  photoManifests,
+  photos,
+  totalPhotos: initialTotalPhotos,
 }) => {
+  const router = useRouter();
+  const routedPhotoId = useMemo(() => {
+    const rawId = router.query.id;
+
+    return Array.isArray(rawId) ? rawId[0] : rawId;
+  }, [router.query.id]);
+  const [viewerIndex, setViewerIndex] = useState(() =>
+    resolveDetailViewerIndex(photos, initialPhoto.id, activeIndex),
+  );
   const [activeTab, setActiveTab] = useState<InspectorTab>('info');
   const [filmstripPreview, setFilmstripPreview] =
     useState<FilmstripPreview | null>(null);
@@ -597,8 +729,11 @@ const PhotoPage: NextPage<PhotoPageProps> = ({
   const [isMobileInspectorDragging, setIsMobileInspectorDragging] =
     useState(false);
   const [shareStatus, setShareStatus] = useState('');
+  const [detailEntryTransition, setDetailEntryTransition] =
+    useState<DetailEntryTransition | null>(null);
   const activeFilmstripItemRef = useRef<HTMLAnchorElement | null>(null);
-  const detailTouchStartRef = useRef<TouchPoint | null>(null);
+  const detailEntryTransitionTimerRef = useRef<number>();
+  const detailImageFrameRef = useRef<HTMLDivElement | null>(null);
   const filmstripRef = useRef<HTMLDivElement | null>(null);
   const inspectorDragFrameRef = useRef<number>();
   const inspectorDragHeightRef = useRef(0);
@@ -606,11 +741,25 @@ const PhotoPage: NextPage<PhotoPageProps> = ({
   const inspectorHandleDragYRef = useRef(0);
   const inspectorHandleTouchStartRef = useRef<TouchPoint | null>(null);
   const lastMobilePhotoGestureAtRef = useRef(0);
+  const lastSyncedPhotoIdRef = useRef(initialPhoto.id);
   const livePhotoVideoRef = useRef<HTMLVideoElement | null>(null);
   const mobileInspectorRef = useRef<HTMLDivElement | null>(null);
   const photoPointerStartRef = useRef<TouchPoint | null>(null);
   const photoStageRef = useRef<HTMLElement | null>(null);
-  const router = useRouter();
+  const swiperRef = useRef<SwiperInstance | null>(null);
+  const photoManifestById = useMemo(
+    () => new Map(photoManifests.map((item) => [item.id, item])),
+    [photoManifests],
+  );
+  const photo = photos[viewerIndex] ?? initialPhoto;
+  const photoManifest = photoManifestById.get(photo.id) ?? initialPhotoManifest;
+  const totalPhotos = photos.length || initialTotalPhotos;
+  const { next: nextPhoto, previous: previousPhoto } =
+    getCircularPhotoNeighbors(photos, viewerIndex);
+  const filmstripPhotos = useMemo(
+    () => getFilmstripPhotos(photos, viewerIndex, 19),
+    [photos, viewerIndex],
+  );
   const hasReturnSource = Boolean(
     Array.isArray(router.query.from) ? router.query.from[0] : router.query.from,
   );
@@ -622,13 +771,71 @@ const PhotoPage: NextPage<PhotoPageProps> = ({
         : buildPhotoDetailHref(photoId),
     [hasReturnSource, returnHref],
   );
+  const previousPhotoHref = previousPhoto
+    ? buildSiblingPhotoHref(previousPhoto.id)
+    : '';
+  const nextPhotoHref = nextPhoto ? buildSiblingPhotoHref(nextPhoto.id) : '';
+  const prefetchedDetailHrefs = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          [
+            previousPhotoHref,
+            nextPhotoHref,
+            ...filmstripPhotos
+              .filter((item) => item.id !== photo.id)
+              .map((item) => buildSiblingPhotoHref(item.id)),
+          ].filter((href): href is string => Boolean(href)),
+        ),
+      ),
+    [
+      buildSiblingPhotoHref,
+      filmstripPhotos,
+      nextPhotoHref,
+      photo.id,
+      previousPhotoHref,
+    ],
+  );
+  const prefetchedRouteHrefs = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          [returnHref, ...prefetchedDetailHrefs].filter(
+            (href): href is string => Boolean(href),
+          ),
+        ),
+      ),
+    [prefetchedDetailHrefs, returnHref],
+  );
   const photoTitle = getPhotoTitle(photo);
   const title = `${photoTitle} | ${AppConfig.site_name}`;
   const description = photo.description || AppConfig.description;
-  const activePosition = `${activeIndex + 1} / ${totalPhotos}`;
+  const activePosition = `${viewerIndex + 1} / ${totalPhotos}`;
   const livePhotoVideo =
     photoManifest.video?.type === 'live-photo' ? photoManifest.video : null;
   const detailImage = useDetailImageLoader(photo.src, photo.thumbnail);
+  const handleDetailImagePainted = useCallback(
+    (paintedSrc: string) => {
+      if (!paintedSrc) {
+        return;
+      }
+
+      if (typeof window === 'undefined') {
+        detailImage.clearPreviousDisplay(paintedSrc);
+        return;
+      }
+
+      window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(() => {
+          detailImage.clearPreviousDisplay(paintedSrc);
+        });
+      });
+    },
+    [detailImage],
+  );
+  const detailBackgroundSource =
+    detailImage.displaySrc || photo.thumbnail || photo.src;
+  const detailBackground = useDetailGlassBackground(detailBackgroundSource);
   const mobileInspectorCollapsedHeight = 'min(64svh, 560px)';
   const mobileInspectorExpandedHeight = 'calc(100svh - 88px)';
   const mobileInspectorHeight = isMobileInspectorExpanded
@@ -636,27 +843,165 @@ const PhotoPage: NextPage<PhotoPageProps> = ({
     : mobileInspectorCollapsedHeight;
   const preloadLinks = useMemo(
     () =>
-      Array.from(
-        new Set(
-          [
-            photo.src,
-            previousPhoto?.src,
-            nextPhoto?.src,
-            photo.thumbnail,
-            previousPhoto?.thumbnail,
-            nextPhoto?.thumbnail,
-          ].filter((href): href is string => Boolean(href)),
-        ),
-      ),
-    [
-      nextPhoto?.src,
-      nextPhoto?.thumbnail,
-      previousPhoto?.src,
-      photo.src,
-      photo.thumbnail,
-      previousPhoto?.thumbnail,
-    ],
+      createDetailImagePreloadLinks({
+        nextPhoto,
+        photo,
+        previousPhoto,
+      }),
+    [nextPhoto, photo, previousPhoto],
   );
+  const detailEntryTransitionStyle = detailEntryTransition
+    ? ({
+        height: detailEntryTransition.rect.height,
+        transform: `translate3d(${detailEntryTransition.rect.left}px, ${detailEntryTransition.rect.top}px, 0)`,
+        width: detailEntryTransition.rect.width,
+      } satisfies CSSProperties)
+    : undefined;
+
+  useEffect(() => {
+    preloadLinks
+      .filter((link) => link.rel === 'preload')
+      .forEach((link) => {
+        preloadDetailImageSource(link.href, 1600).catch(() => undefined);
+      });
+  }, [preloadLinks]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return undefined;
+    }
+
+    const rawPayload = window.sessionStorage.getItem(
+      GALLERY_DETAIL_TRANSITION_STORAGE_KEY,
+    );
+    const payload = readGalleryDetailTransitionPayload(
+      rawPayload,
+      photo.id,
+      Date.now(),
+    );
+
+    if (rawPayload) {
+      window.sessionStorage.removeItem(GALLERY_DETAIL_TRANSITION_STORAGE_KEY);
+    }
+
+    if (
+      !payload ||
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    ) {
+      return undefined;
+    }
+
+    let cancelled = false;
+    const frameIds: number[] = [];
+    const queueFrame = (callback: FrameRequestCallback) => {
+      const frameId = window.requestAnimationFrame(callback);
+      frameIds.push(frameId);
+
+      return frameId;
+    };
+
+    queueFrame(() => {
+      queueFrame(() => {
+        if (cancelled) {
+          return;
+        }
+
+        const imageFrame = detailImageFrameRef.current;
+
+        if (!imageFrame) {
+          return;
+        }
+
+        const frameRect = imageFrame.getBoundingClientRect();
+        const targetRect = getContainedImageRect({
+          containerRect: {
+            height: frameRect.height,
+            left: frameRect.left,
+            top: frameRect.top,
+            width: frameRect.width,
+          },
+          imageHeight: photo.height,
+          imageWidth: photo.width,
+        });
+
+        setDetailEntryTransition({
+          alt: photoTitle,
+          imageSrc: payload.imageSrc,
+          phase: 'start',
+          rect: payload.rect,
+        });
+
+        queueFrame(() => {
+          if (cancelled) {
+            return;
+          }
+
+          setDetailEntryTransition({
+            alt: photoTitle,
+            imageSrc: payload.imageSrc,
+            phase: 'end',
+            rect: targetRect,
+          });
+
+          detailEntryTransitionTimerRef.current = window.setTimeout(() => {
+            setDetailEntryTransition((currentTransition) =>
+              currentTransition
+                ? {
+                    ...currentTransition,
+                    phase: 'fade',
+                  }
+                : currentTransition,
+            );
+
+            detailEntryTransitionTimerRef.current = window.setTimeout(() => {
+              setDetailEntryTransition(null);
+              detailEntryTransitionTimerRef.current = undefined;
+            }, 110);
+          }, GALLERY_DETAIL_TRANSITION_DURATION_MS + 120);
+        });
+      });
+    });
+
+    return () => {
+      cancelled = true;
+      frameIds.forEach((frameId) => window.cancelAnimationFrame(frameId));
+
+      if (detailEntryTransitionTimerRef.current) {
+        window.clearTimeout(detailEntryTransitionTimerRef.current);
+        detailEntryTransitionTimerRef.current = undefined;
+      }
+    };
+  }, [photo.height, photo.id, photo.width, photoTitle]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return undefined;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      [previousPhoto?.src, nextPhoto?.src]
+        .filter((src): src is string => Boolean(src))
+        .forEach((src) => {
+          preloadDetailImageSource(src, 1800).catch(() => undefined);
+        });
+    }, 120);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [nextPhoto?.src, previousPhoto?.src]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return undefined;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      prefetchedRouteHrefs.forEach((href) => {
+        router.prefetch(href).catch(() => undefined);
+      });
+    }, 80);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [prefetchedRouteHrefs, router]);
 
   useEffect(() => {
     const filmstrip = filmstripRef.current;
@@ -682,6 +1027,72 @@ const PhotoPage: NextPage<PhotoPageProps> = ({
     setIsMobileInspectorExpanded(false);
     setIsMobileInspectorOpen(false);
   }, [photo.id]);
+
+  useEffect(() => {
+    if (!router.isReady) {
+      return;
+    }
+
+    const targetIndex = resolveDetailViewerIndex(
+      photos,
+      routedPhotoId || initialPhoto.id,
+      activeIndex,
+    );
+
+    lastSyncedPhotoIdRef.current = routedPhotoId || initialPhoto.id;
+    setViewerIndex((currentIndex) =>
+      currentIndex === targetIndex ? currentIndex : targetIndex,
+    );
+  }, [activeIndex, initialPhoto.id, photos, routedPhotoId, router.isReady]);
+
+  useEffect(() => {
+    const swiper = swiperRef.current;
+
+    if (!swiper || swiper.destroyed || swiper.activeIndex === viewerIndex) {
+      return;
+    }
+
+    swiper.slideTo(viewerIndex, 0);
+  }, [viewerIndex]);
+
+  useEffect(() => {
+    const swiper = swiperRef.current;
+
+    if (!swiper || swiper.destroyed) {
+      return;
+    }
+
+    swiper.allowTouchMove = !isImageZoomed && !isMobileInspectorOpen;
+  }, [isImageZoomed, isMobileInspectorOpen]);
+
+  useEffect(() => {
+    if (!router.isReady || !photo.id) {
+      return;
+    }
+
+    const routedId = routedPhotoId || initialPhoto.id;
+
+    if (
+      !shouldReplaceDetailViewerUrl({
+        activePhotoId: photo.id,
+        lastSyncedPhotoId: lastSyncedPhotoIdRef.current,
+        routedPhotoId: routedId,
+      })
+    ) {
+      return;
+    }
+
+    const targetHref = buildSiblingPhotoHref(photo.id);
+
+    lastSyncedPhotoIdRef.current = photo.id;
+    router
+      .replace(targetHref, undefined, { scroll: false, shallow: true })
+      .catch((error) => {
+        if (shouldHardNavigateAfterClientRouteFailure(error)) {
+          window.location.href = targetHref;
+        }
+      });
+  }, [buildSiblingPhotoHref, initialPhoto.id, photo.id, routedPhotoId, router]);
 
   useEffect(() => {
     const video = livePhotoVideoRef.current;
@@ -738,6 +1149,60 @@ const PhotoPage: NextPage<PhotoPageProps> = ({
     setIsMobileInspectorOpen(true);
   };
 
+  const slideToIndex = useCallback(
+    (targetIndex: number) => {
+      if (targetIndex < 0 || targetIndex >= totalPhotos) {
+        return;
+      }
+
+      const swiper = swiperRef.current;
+
+      preloadDetailImageSource(photos[targetIndex]?.src ?? '', 700).catch(
+        () => undefined,
+      );
+
+      if (swiper && !swiper.destroyed) {
+        swiper.slideTo(targetIndex);
+        return;
+      }
+
+      setViewerIndex(targetIndex);
+    },
+    [photos, totalPhotos],
+  );
+
+  const slideToPhoto = useCallback(
+    (targetPhoto: Photo) => {
+      const targetIndex = photos.findIndex(
+        (item) => item.id === targetPhoto.id,
+      );
+
+      if (targetIndex < 0) {
+        return;
+      }
+
+      slideToIndex(targetIndex);
+    },
+    [photos, slideToIndex],
+  );
+
+  const slideByDirection = useCallback(
+    (direction: 'next' | 'previous') => {
+      const targetIndex = getDetailViewerNeighborIndex(
+        viewerIndex,
+        totalPhotos,
+        direction,
+      );
+
+      if (targetIndex === null) {
+        return;
+      }
+
+      slideToIndex(targetIndex);
+    },
+    [slideToIndex, totalPhotos, viewerIndex],
+  );
+
   const handleMobilePhotoGesture = (
     deltaX: number,
     deltaY: number,
@@ -748,11 +1213,8 @@ const PhotoPage: NextPage<PhotoPageProps> = ({
     }
 
     const isMobileViewport = window.matchMedia('(max-width: 1023px)').matches;
-    const isLandscapeViewport = window.matchMedia(
-      '(orientation: landscape)',
-    ).matches;
 
-    if (!isMobileViewport || (isMobileInspectorOpen && !isLandscapeViewport)) {
+    if (!isMobileViewport || isMobileInspectorOpen) {
       return;
     }
 
@@ -762,36 +1224,12 @@ const PhotoPage: NextPage<PhotoPageProps> = ({
       return;
     }
 
-    const isHorizontalSwipe =
-      Math.abs(deltaX) >= MOBILE_PHOTO_SWIPE_DISTANCE &&
-      Math.abs(deltaX) > Math.abs(deltaY) * 1.2 &&
-      elapsed < 900;
     const isIntentionalSwipe =
       deltaY <= -MOBILE_INFO_SWIPE_DISTANCE &&
       Math.abs(deltaY) > Math.abs(deltaX) * 1.2 &&
       elapsed < 900;
 
-    if (isHorizontalSwipe) {
-      const targetPhoto = deltaX < 0 ? nextPhoto : previousPhoto;
-
-      if (targetPhoto) {
-        lastMobilePhotoGestureAtRef.current = now;
-        router
-          .push(`/photos/${targetPhoto.id}/`, undefined, { scroll: false })
-          .then((navigated) => {
-            if (!navigated) {
-              window.location.href = `/photos/${targetPhoto.id}/`;
-            }
-          })
-          .catch(() => {
-            window.location.href = `/photos/${targetPhoto.id}/`;
-          });
-      }
-
-      return;
-    }
-
-    if (isIntentionalSwipe && !isLandscapeViewport) {
+    if (isIntentionalSwipe) {
       lastMobilePhotoGestureAtRef.current = now;
       openMobileInspector();
     }
@@ -981,48 +1419,11 @@ const PhotoPage: NextPage<PhotoPageProps> = ({
     settleMobileInspectorHeight(isMobileInspectorExpanded);
   };
 
-  const handlePhotoTouchStart = (event: ReactTouchEvent<HTMLElement>) => {
-    if (event.touches.length !== 1) {
-      detailTouchStartRef.current = null;
-      return;
-    }
-
-    const touch = event.touches[0];
-
-    if (!touch) {
-      detailTouchStartRef.current = null;
-      return;
-    }
-
-    detailTouchStartRef.current = {
-      time: Date.now(),
-      x: touch.clientX,
-      y: touch.clientY,
-    };
-  };
-
-  const handlePhotoTouchEnd = (event: ReactTouchEvent<HTMLElement>) => {
-    const start = detailTouchStartRef.current;
-    detailTouchStartRef.current = null;
-
-    if (!start) {
-      return;
-    }
-
-    const touch = event.changedTouches[0];
-
-    if (!touch) {
-      return;
-    }
-
-    const deltaX = touch.clientX - start.x;
-    const deltaY = touch.clientY - start.y;
-    const elapsed = Date.now() - start.time;
-
-    handleMobilePhotoGesture(deltaX, deltaY, elapsed);
-  };
-
   const handlePhotoPointerDown = (event: ReactPointerEvent<HTMLElement>) => {
+    if (event.pointerType === 'touch') {
+      return;
+    }
+
     if (!event.isPrimary) {
       photoPointerStartRef.current = null;
       return;
@@ -1036,6 +1437,10 @@ const PhotoPage: NextPage<PhotoPageProps> = ({
   };
 
   const handlePhotoPointerUp = (event: ReactPointerEvent<HTMLElement>) => {
+    if (event.pointerType === 'touch') {
+      return;
+    }
+
     const start = photoPointerStartRef.current;
     photoPointerStartRef.current = null;
 
@@ -1076,16 +1481,45 @@ const PhotoPage: NextPage<PhotoPageProps> = ({
   const handleReturnNavigation = (
     event: ReactMouseEvent<HTMLAnchorElement>,
   ) => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    event.preventDefault();
+
     if (
-      !hasReturnSource ||
-      typeof window === 'undefined' ||
-      window.history.length <= 1
+      shouldUseBrowserHistoryForReturn({
+        historyLength: window.history.length,
+        historyState: window.history.state,
+      })
+    ) {
+      window.history.back();
+      return;
+    }
+
+    router.replace(returnHref, undefined, { scroll: false }).catch((error) => {
+      if (shouldHardNavigateAfterClientRouteFailure(error)) {
+        window.location.href = returnHref;
+      }
+    });
+  };
+
+  const handleDetailPhotoLinkNavigation = (
+    event: ReactMouseEvent<HTMLAnchorElement>,
+    targetPhoto: Photo,
+  ) => {
+    if (
+      event.metaKey ||
+      event.ctrlKey ||
+      event.shiftKey ||
+      event.altKey ||
+      event.button !== 0
     ) {
       return;
     }
 
     event.preventDefault();
-    router.back();
+    slideToPhoto(targetPhoto);
   };
 
   const scrollFilmstripWithWheel = (event: ReactWheelEvent<HTMLDivElement>) => {
@@ -1144,12 +1578,12 @@ const PhotoPage: NextPage<PhotoPageProps> = ({
     <main className="photo-detail-page h-[100svh] overflow-hidden bg-[#050505] text-stone-100 antialiased lg:h-screen">
       <Meta title={title} description={description} />
       <Head>
-        {preloadLinks.map((href, index) => (
+        {preloadLinks.map((link) => (
           <link
-            key={href}
-            rel={index <= 2 ? 'preload' : 'prefetch'}
+            key={`${link.rel}-${link.href}`}
+            rel={link.rel}
             as="image"
-            href={href}
+            href={link.href}
           />
         ))}
         {livePhotoVideo ? (
@@ -1168,12 +1602,31 @@ const PhotoPage: NextPage<PhotoPageProps> = ({
           ref={photoStageRef}
           className="photo-detail-stage relative h-full min-h-0 overflow-hidden bg-[#0b0807] lg:h-screen"
         >
-          <img
-            src={photo.thumbnail || photo.src}
-            alt=""
-            aria-hidden="true"
-            className="pointer-events-none absolute inset-0 size-full scale-125 object-cover opacity-70 blur-[52px] brightness-125 saturate-150"
-          />
+          {detailBackground.previousSrc ? (
+            <img
+              key={`previous-${detailBackground.previousSrc}`}
+              src={detailBackground.previousSrc}
+              alt=""
+              aria-hidden="true"
+              className="photo-detail-glass-background photo-detail-glass-background-previous"
+              style={{ opacity: detailBackground.previousOpacity }}
+            />
+          ) : null}
+          {detailBackground.currentSrc ? (
+            <img
+              key={`current-${detailBackground.currentSrc}`}
+              src={detailBackground.currentSrc}
+              alt=""
+              aria-hidden="true"
+              className="photo-detail-glass-background photo-detail-glass-background-current"
+              style={
+                {
+                  '--detail-background-target-opacity':
+                    detailBackground.currentOpacity,
+                } as CSSProperties
+              }
+            />
+          ) : null}
           <div className="pointer-events-none absolute inset-0 bg-[#fff7ed]/[0.035] backdrop-blur-xl" />
           <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(0,0,0,0.02)_0%,rgba(0,0,0,0.16)_62%,rgba(0,0,0,0.38)_100%)]" />
 
@@ -1211,7 +1664,7 @@ const PhotoPage: NextPage<PhotoPageProps> = ({
             <button
               type="button"
               onClick={sharePhoto}
-              className="grid size-10 place-items-center rounded-full bg-black/45 text-stone-100 ring-1 ring-white/[0.09] backdrop-blur transition hover:bg-white/[0.12]"
+              className="grid size-10 place-items-center rounded-full bg-black/30 text-stone-100/80 opacity-70 ring-1 ring-white/[0.06] backdrop-blur transition hover:bg-white/[0.12] hover:text-stone-100 hover:opacity-100 focus-visible:opacity-100"
               aria-label="Share photo"
             >
               <ShareIcon className="size-5" />
@@ -1219,7 +1672,7 @@ const PhotoPage: NextPage<PhotoPageProps> = ({
             <Link
               href={returnHref}
               onClick={handleReturnNavigation}
-              className="grid size-10 place-items-center rounded-full bg-black/45 text-stone-100 ring-1 ring-white/[0.09] backdrop-blur transition hover:bg-white/[0.12]"
+              className="grid size-10 place-items-center rounded-full bg-black/30 text-stone-100/80 opacity-70 ring-1 ring-white/[0.06] backdrop-blur transition hover:bg-white/[0.12] hover:text-stone-100 hover:opacity-100 focus-visible:opacity-100"
               aria-label="Close photo"
             >
               <CloseIcon className="size-5" />
@@ -1233,164 +1686,253 @@ const PhotoPage: NextPage<PhotoPageProps> = ({
           ) : null}
 
           <figure
-            className="absolute inset-x-0 top-0 z-10 flex items-stretch justify-center px-0"
+            className="absolute inset-x-0 top-0 z-10 flex items-stretch justify-center overflow-hidden px-0"
             style={{ bottom: ACTIVE_FILMSTRIP_THUMBNAIL_HEIGHT }}
             onPointerDownCapture={handlePhotoPointerDown}
             onPointerUpCapture={handlePhotoPointerUp}
-            onTouchStartCapture={handlePhotoTouchStart}
-            onTouchEndCapture={handlePhotoTouchEnd}
           >
-            <TransformWrapper
-              key={photo.id}
-              initialScale={MIN_DETAIL_ZOOM}
-              minScale={MIN_DETAIL_ZOOM}
-              maxScale={MAX_DETAIL_ZOOM}
-              centerOnInit
-              centerZoomedOut
-              limitToBounds
-              smooth={false}
-              wheel={{
-                step: DETAIL_WHEEL_ZOOM_STEP,
-              }}
-              pinch={{
-                allowPanning: true,
-                step: 5,
-              }}
-              panning={{
-                disabled: !isImageZoomed,
-                velocityDisabled: false,
-              }}
-              doubleClick={{
-                animationTime: 180,
-                animationType: 'easeOut',
-                mode: 'toggle',
-                step: DETAIL_DOUBLE_CLICK_ZOOM_STEP,
-              }}
-              onTransform={(_ref, state) => {
-                const nextIsZoomed = state.scale > 1.01;
-
-                setIsImageZoomed((current) =>
-                  current === nextIsZoomed ? current : nextIsZoomed,
+            <Swiper
+              className="size-full"
+              initialSlide={viewerIndex}
+              modules={[Virtual]}
+              resistanceRatio={0.72}
+              slidesPerView={1}
+              speed={220}
+              threshold={4}
+              virtual
+              onSlideChange={(swiper) => {
+                setViewerIndex((currentIndex) =>
+                  currentIndex === swiper.activeIndex
+                    ? currentIndex
+                    : swiper.activeIndex,
                 );
               }}
+              onSwiper={(swiper) => {
+                swiperRef.current = swiper;
+              }}
             >
-              {() => (
-                <>
-                  <TransformComponent
-                    wrapperClass="!relative !h-full !w-full"
-                    contentClass="!relative !flex !h-full !w-full !items-center !justify-center"
-                    wrapperStyle={{
-                      cursor: isImageZoomed ? 'grab' : 'zoom-in',
-                      overflow: 'hidden',
-                      touchAction: isImageZoomed ? 'none' : 'pan-y pinch-zoom',
-                    }}
-                    contentStyle={{
-                      alignItems: 'center',
-                      height: '100%',
-                      justifyContent: 'center',
-                      width: '100%',
-                    }}
-                  >
-                    <img
-                      src={detailImage.displaySrc}
-                      alt={photoTitle}
-                      loading="eager"
-                      decoding="async"
-                      draggable={false}
-                      className={`size-full select-none object-contain shadow-2xl shadow-black/45 transition duration-300 ${
-                        detailImage.loading ? 'saturate-75 brightness-75' : ''
-                      }`}
-                    />
-                    {livePhotoVideo ? (
-                      <video
-                        ref={livePhotoVideoRef}
-                        src={livePhotoVideo.videoUrl}
-                        aria-label={`${photoTitle} live photo video`}
-                        className={`pointer-events-none absolute inset-0 size-full select-none object-contain transition-opacity duration-150 ${
-                          isLivePhotoPlaying ? 'opacity-100' : 'opacity-0'
-                        }`}
-                        muted
-                        playsInline
-                        preload="metadata"
-                        onEnded={stopLivePhoto}
-                      />
-                    ) : null}
-                    {detailImage.loading ? (
-                      <div
-                        className="pointer-events-none absolute bottom-4 right-4 z-30 grid size-9 place-items-center text-stone-100 drop-shadow-[0_2px_8px_rgba(0,0,0,0.75)]"
-                        aria-hidden="true"
-                      >
-                        <svg
-                          viewBox="0 0 36 36"
-                          className="absolute inset-0 size-full -rotate-90"
-                        >
-                          <circle
-                            cx="18"
-                            cy="18"
-                            r="15.5"
-                            fill="none"
-                            stroke="currentColor"
-                            strokeWidth="2.4"
-                            className="text-white/25"
-                          />
-                          <circle
-                            cx="18"
-                            cy="18"
-                            r="15.5"
-                            fill="none"
-                            pathLength={100}
-                            stroke="currentColor"
-                            strokeDasharray={100}
-                            strokeDashoffset={100 - detailImage.progress}
-                            strokeLinecap="round"
-                            strokeWidth="2.4"
-                            className="text-[#c5dfd8]"
-                          />
-                        </svg>
-                        <span className="relative text-xs font-semibold tabular-nums">
-                          {detailImage.progress}
-                        </span>
-                      </div>
-                    ) : null}
-                  </TransformComponent>
-                  {livePhotoVideo ? (
-                    <button
-                      type="button"
-                      onFocus={playLivePhoto}
-                      onBlur={stopLivePhoto}
-                      onClick={toggleLivePhoto}
-                      onMouseEnter={playLivePhoto}
-                      onMouseLeave={stopLivePhoto}
-                      onPointerDown={playLivePhoto}
-                      onPointerUp={stopLivePhoto}
-                      onPointerCancel={stopLivePhoto}
-                      className={`absolute left-4 z-20 rounded-full px-3 py-1.5 text-xs font-semibold ring-1 backdrop-blur transition ${
-                        isLivePhotoPlaying
-                          ? 'bg-[#9db6b0] text-[#17110e] ring-white/[0.18]'
-                          : 'bg-black/45 text-stone-200 ring-white/[0.08] hover:bg-white/[0.10]'
-                      }`}
-                      style={{ bottom: 14 }}
-                      aria-label={
-                        isLivePhotoPlaying
-                          ? 'Stop live photo'
-                          : 'Play live photo'
-                      }
+              {photos.map((item, index) => {
+                const isActive = index === viewerIndex;
+                const itemTitle = getPhotoTitle(item);
+                const circularDistance = Math.min(
+                  Math.abs(index - viewerIndex),
+                  totalPhotos - Math.abs(index - viewerIndex),
+                );
+                const shouldLoadEagerly = circularDistance <= 2;
+
+                return (
+                  <SwiperSlide key={item.id} virtualIndex={index}>
+                    <div
+                      className="detail-transform-shell relative flex size-full items-center justify-center overflow-hidden opacity-100"
+                      data-photo-id={item.id}
                     >
-                      实况
-                    </button>
-                  ) : null}
-                </>
-              )}
-            </TransformWrapper>
+                      {isActive ? (
+                        <TransformWrapper
+                          initialScale={MIN_DETAIL_ZOOM}
+                          minScale={MIN_DETAIL_ZOOM}
+                          maxScale={MAX_DETAIL_ZOOM}
+                          centerOnInit
+                          centerZoomedOut
+                          limitToBounds
+                          smooth={false}
+                          wheel={{
+                            step: DETAIL_WHEEL_ZOOM_STEP,
+                          }}
+                          pinch={{
+                            allowPanning: true,
+                            step: 5,
+                          }}
+                          panning={{
+                            disabled: !isImageZoomed,
+                            velocityDisabled: false,
+                          }}
+                          doubleClick={{
+                            animationTime: 180,
+                            animationType: 'easeOut',
+                            mode: 'toggle',
+                            step: DETAIL_DOUBLE_CLICK_ZOOM_STEP,
+                          }}
+                          onTransform={(_ref, state) => {
+                            const nextIsZoomed = state.scale > 1.01;
+
+                            setIsImageZoomed((current) =>
+                              current === nextIsZoomed ? current : nextIsZoomed,
+                            );
+                          }}
+                        >
+                          {({ resetTransform }) => (
+                            <>
+                              <DetailTransformResetter
+                                photoId={photo.id}
+                                resetTransform={resetTransform}
+                              />
+                              <TransformComponent
+                                wrapperClass="!relative !h-full !w-full"
+                                contentClass="!relative !flex !h-full !w-full !items-center !justify-center"
+                                wrapperStyle={{
+                                  cursor: isImageZoomed ? 'grab' : 'zoom-in',
+                                  overflow: 'hidden',
+                                  touchAction: isImageZoomed
+                                    ? 'none'
+                                    : 'pan-y pinch-zoom',
+                                }}
+                                contentStyle={{
+                                  alignItems: 'center',
+                                  height: '100%',
+                                  justifyContent: 'center',
+                                  width: '100%',
+                                }}
+                              >
+                                <div
+                                  ref={isActive ? detailImageFrameRef : null}
+                                  className="relative size-full"
+                                >
+                                  {detailImage.loading && photo.thumbnail ? (
+                                    <img
+                                      src={photo.thumbnail}
+                                      alt=""
+                                      aria-hidden="true"
+                                      draggable={false}
+                                      className="absolute inset-0 z-0 size-full select-none object-contain shadow-2xl shadow-black/45"
+                                    />
+                                  ) : null}
+                                  <img
+                                    src={photo.src}
+                                    alt={photoTitle}
+                                    loading="eager"
+                                    decoding="async"
+                                    draggable={false}
+                                    onError={() =>
+                                      handleDetailImagePainted(photo.src)
+                                    }
+                                    onLoad={() =>
+                                      handleDetailImagePainted(photo.src)
+                                    }
+                                    className="absolute inset-0 z-10 size-full select-none object-contain shadow-2xl shadow-black/45"
+                                  />
+                                  {livePhotoVideo ? (
+                                    <video
+                                      ref={livePhotoVideoRef}
+                                      src={livePhotoVideo.videoUrl}
+                                      aria-label={`${photoTitle} live photo video`}
+                                      className={`pointer-events-none absolute inset-0 z-20 size-full select-none object-contain transition-opacity duration-150 ${
+                                        isLivePhotoPlaying
+                                          ? 'opacity-100'
+                                          : 'opacity-0'
+                                      }`}
+                                      muted
+                                      playsInline
+                                      preload="metadata"
+                                      onEnded={stopLivePhoto}
+                                    />
+                                  ) : null}
+                                </div>
+                                {detailImage.loading ? (
+                                  <div
+                                    className="pointer-events-none absolute bottom-4 right-4 z-30 grid size-9 place-items-center text-stone-100 drop-shadow-[0_2px_8px_rgba(0,0,0,0.75)]"
+                                    aria-hidden="true"
+                                  >
+                                    <svg
+                                      viewBox="0 0 36 36"
+                                      className="absolute inset-0 size-full -rotate-90"
+                                    >
+                                      <circle
+                                        cx="18"
+                                        cy="18"
+                                        r="15.5"
+                                        fill="none"
+                                        stroke="currentColor"
+                                        strokeWidth="2.4"
+                                        className="text-white/25"
+                                      />
+                                      <circle
+                                        cx="18"
+                                        cy="18"
+                                        r="15.5"
+                                        fill="none"
+                                        pathLength={100}
+                                        stroke="currentColor"
+                                        strokeDasharray={100}
+                                        strokeDashoffset={
+                                          100 - detailImage.progress
+                                        }
+                                        strokeLinecap="round"
+                                        strokeWidth="2.4"
+                                        className="text-[#c5dfd8]"
+                                      />
+                                    </svg>
+                                    <span className="relative text-xs font-semibold tabular-nums">
+                                      {detailImage.progress}
+                                    </span>
+                                  </div>
+                                ) : null}
+                              </TransformComponent>
+                              {livePhotoVideo ? (
+                                <button
+                                  type="button"
+                                  onFocus={playLivePhoto}
+                                  onBlur={stopLivePhoto}
+                                  onClick={toggleLivePhoto}
+                                  onMouseEnter={playLivePhoto}
+                                  onMouseLeave={stopLivePhoto}
+                                  onPointerDown={playLivePhoto}
+                                  onPointerUp={stopLivePhoto}
+                                  onPointerCancel={stopLivePhoto}
+                                  className={`absolute left-4 z-20 rounded-full px-3 py-1.5 text-xs font-semibold ring-1 backdrop-blur transition ${
+                                    isLivePhotoPlaying
+                                      ? 'bg-[#9db6b0] text-[#17110e] ring-white/[0.18]'
+                                      : 'bg-black/45 text-stone-200 ring-white/[0.08] hover:bg-white/[0.10]'
+                                  }`}
+                                  style={{ bottom: 14 }}
+                                  aria-label={
+                                    isLivePhotoPlaying
+                                      ? 'Stop live photo'
+                                      : 'Play live photo'
+                                  }
+                                >
+                                  实况
+                                </button>
+                              ) : null}
+                            </>
+                          )}
+                        </TransformWrapper>
+                      ) : (
+                        <img
+                          src={item.src || item.thumbnail}
+                          alt={itemTitle}
+                          draggable={false}
+                          loading={shouldLoadEagerly ? 'eager' : 'lazy'}
+                          decoding="async"
+                          className="size-full select-none object-contain shadow-2xl shadow-black/45"
+                        />
+                      )}
+                    </div>
+                  </SwiperSlide>
+                );
+              })}
+            </Swiper>
           </figure>
 
           {previousPhoto ? (
             <Link
-              href={buildSiblingPhotoHref(previousPhoto.id)}
-              prefetch={false}
+              href={previousPhotoHref}
               replace={hasReturnSource}
+              onClick={(event) => {
+                if (
+                  event.metaKey ||
+                  event.ctrlKey ||
+                  event.shiftKey ||
+                  event.altKey ||
+                  event.button !== 0
+                ) {
+                  return;
+                }
+
+                event.preventDefault();
+                slideByDirection('previous');
+              }}
               aria-label={`Previous photo: ${getPhotoTitle(previousPhoto)}`}
-              className="absolute left-3 top-1/2 z-30 hidden size-11 -translate-y-1/2 items-center justify-center rounded-full bg-black/35 text-stone-100 ring-1 ring-white/[0.11] backdrop-blur transition hover:bg-[#9db6b0] hover:text-[#17110e] sm:inline-flex"
+              className="absolute left-3 top-1/2 z-30 hidden size-11 -translate-y-1/2 items-center justify-center rounded-full bg-black/35 text-stone-100 ring-1 ring-white/[0.11] backdrop-blur transition hover:bg-white/[0.12] hover:text-stone-100 sm:inline-flex"
             >
               <ArrowLeftIcon className="size-6" />
             </Link>
@@ -1398,21 +1940,54 @@ const PhotoPage: NextPage<PhotoPageProps> = ({
 
           {nextPhoto ? (
             <Link
-              href={buildSiblingPhotoHref(nextPhoto.id)}
-              prefetch={false}
+              href={nextPhotoHref}
               replace={hasReturnSource}
+              onClick={(event) => {
+                if (
+                  event.metaKey ||
+                  event.ctrlKey ||
+                  event.shiftKey ||
+                  event.altKey ||
+                  event.button !== 0
+                ) {
+                  return;
+                }
+
+                event.preventDefault();
+                slideByDirection('next');
+              }}
               aria-label={`Next photo: ${getPhotoTitle(nextPhoto)}`}
-              className="absolute right-3 top-1/2 z-30 hidden size-11 -translate-y-1/2 items-center justify-center rounded-full bg-black/35 text-stone-100 ring-1 ring-white/[0.11] backdrop-blur transition hover:bg-[#9db6b0] hover:text-[#17110e] sm:inline-flex"
+              className="absolute right-3 top-1/2 z-30 hidden size-11 -translate-y-1/2 items-center justify-center rounded-full bg-black/35 text-stone-100 ring-1 ring-white/[0.11] backdrop-blur transition hover:bg-white/[0.12] hover:text-stone-100 sm:inline-flex"
             >
               <ArrowRightIcon className="size-6" />
             </Link>
+          ) : null}
+
+          {shouldShowMobileDetailDrawerButton(isMobileInspectorOpen) ? (
+            <button
+              type="button"
+              onClick={openMobileInspector}
+              className="absolute z-50 grid size-10 place-items-center rounded-full bg-black/30 text-stone-100/80 opacity-75 ring-1 ring-white/[0.06] backdrop-blur transition hover:bg-white/[0.12] hover:text-stone-100 hover:opacity-100 focus-visible:opacity-100 lg:hidden"
+              style={{
+                bottom: getMobileDetailDrawerButtonBottom(
+                  ACTIVE_FILMSTRIP_THUMBNAIL_HEIGHT,
+                ),
+                left: 'max(1rem, env(safe-area-inset-left))',
+              }}
+              aria-controls="photo-mobile-inspector"
+              aria-expanded={isMobileInspectorOpen}
+              aria-label="打开照片详情"
+              title="详情"
+            >
+              <InfoIcon className="size-5" />
+            </button>
           ) : null}
 
           {filmstripPreview ? (
             <div
               aria-hidden="true"
               data-qa="filmstrip-preview"
-              className="pointer-events-none absolute z-50 overflow-hidden rounded-md border border-white/[0.12] bg-neutral-950/35 p-[2px] shadow-2xl shadow-black/35 backdrop-blur-xl"
+              className="pointer-events-none absolute z-50 overflow-hidden rounded-md border border-white/[0.10] bg-[#f7f2ec]/[0.12] p-[2px] shadow-2xl shadow-black/35 backdrop-blur-xl backdrop-saturate-150"
               style={{
                 bottom: ACTIVE_FILMSTRIP_THUMBNAIL_HEIGHT + 12,
                 height: filmstripPreview.dimensions.height,
@@ -1433,7 +2008,7 @@ const PhotoPage: NextPage<PhotoPageProps> = ({
 
           <div
             data-qa="filmstrip-shell"
-            className="absolute inset-x-0 bottom-0 z-40 border-t border-white/[0.18] bg-[#fff7ed]/[0.16] shadow-[0_-18px_52px_rgba(255,247,237,0.16)] backdrop-blur-2xl backdrop-brightness-125 backdrop-saturate-150"
+            className="absolute inset-x-0 bottom-0 z-40 border-t border-white/[0.09] bg-[#f7f2ec]/[0.08] shadow-[0_-18px_52px_rgba(247,242,236,0.08)] backdrop-blur-2xl"
             style={{ height: ACTIVE_FILMSTRIP_THUMBNAIL_HEIGHT }}
           >
             <div
@@ -1459,10 +2034,14 @@ const PhotoPage: NextPage<PhotoPageProps> = ({
                     key={item.id}
                     ref={isActive ? activeFilmstripItemRef : undefined}
                     href={buildSiblingPhotoHref(item.id)}
-                    prefetch={false}
                     replace={hasReturnSource}
                     aria-label={`Open ${itemTitle}`}
                     aria-current={isActive ? 'page' : undefined}
+                    onClick={(event) => {
+                      if (!isActive) {
+                        handleDetailPhotoLinkNavigation(event, item);
+                      }
+                    }}
                     onBlur={() => setFilmstripPreview(null)}
                     onFocus={(event) =>
                       showFilmstripPreview(item, itemTitle, event)
@@ -1471,7 +2050,7 @@ const PhotoPage: NextPage<PhotoPageProps> = ({
                       showFilmstripPreview(item, itemTitle, event)
                     }
                     onMouseLeave={() => setFilmstripPreview(null)}
-                    className={`group relative shrink-0 overflow-hidden bg-zinc-200/[0.08] outline-none transition focus-visible:z-10 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#9db6b0] ${
+                    className={`group relative shrink-0 overflow-hidden bg-black/25 shadow-[inset_0_0_0_0.35px_rgba(255,255,255,0.12)] outline-none transition focus-visible:z-10 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#9db6b0] ${
                       isActive ? 'z-10' : ''
                     }`}
                     style={{
@@ -1498,8 +2077,9 @@ const PhotoPage: NextPage<PhotoPageProps> = ({
 
         {isMobileInspectorOpen ? (
           <div
+            id="photo-mobile-inspector"
             ref={mobileInspectorRef}
-            className={`photo-mobile-inspector fixed inset-x-0 bottom-0 z-[60] flex max-h-[calc(100svh-32px)] flex-col overflow-hidden rounded-t-[28px] border border-white/[0.10] bg-[#30322f]/[0.96] text-stone-100 shadow-[0_-24px_70px_rgba(0,0,0,0.42)] backdrop-blur-2xl backdrop-brightness-75 backdrop-saturate-50 lg:hidden ${
+            className={`photo-mobile-inspector fixed inset-x-0 bottom-0 z-[60] flex max-h-[calc(100svh-32px)] flex-col overflow-hidden rounded-t-[28px] border border-white/[0.13] bg-[#211b17]/[0.82] text-stone-100 shadow-[0_-24px_70px_rgba(0,0,0,0.44)] backdrop-blur-2xl backdrop-brightness-105 backdrop-saturate-150 lg:hidden ${
               isMobileInspectorDragging
                 ? 'transition-none'
                 : 'transition-[height] duration-200 ease-out'
@@ -1628,11 +2208,21 @@ const PhotoPage: NextPage<PhotoPageProps> = ({
             )}
           </aside>
         ) : null}
+
+        {detailEntryTransition ? (
+          <img
+            src={detailEntryTransition.imageSrc}
+            alt={detailEntryTransition.alt}
+            aria-hidden="true"
+            draggable={false}
+            data-phase={detailEntryTransition.phase}
+            className="gallery-detail-entry-transition pointer-events-none fixed left-0 top-0 z-[90] select-none object-cover"
+            style={detailEntryTransitionStyle}
+          />
+        ) : null}
       </div>
       <style jsx global>{`
-        @media (orientation: landscape) and (max-width: 1023px),
-          (orientation: landscape) and (max-height: 620px) and (pointer: coarse),
-          (orientation: landscape) and (max-height: 620px) and (hover: none) {
+        @media (orientation: landscape) and (min-height: 621px) and (max-width: 1023px) {
           .photo-detail-page {
             height: 100svh !important;
             overflow: hidden !important;
@@ -1675,9 +2265,7 @@ const PhotoPage: NextPage<PhotoPageProps> = ({
           }
         }
 
-        @media (orientation: landscape) and (max-height: 460px) and (max-width: 1023px),
-          (orientation: landscape) and (max-height: 460px) and (pointer: coarse),
-          (orientation: landscape) and (max-height: 460px) and (hover: none) {
+        @media (orientation: landscape) and (min-height: 621px) and (max-width: 1023px) {
           .photo-detail-layout.photo-detail-layout-open {
             grid-template-columns: minmax(0, 1fr) minmax(252px, 32vw) !important;
           }
@@ -1685,6 +2273,36 @@ const PhotoPage: NextPage<PhotoPageProps> = ({
           .photo-detail-inspector > div:first-child {
             padding: 10px 12px !important;
           }
+        }
+
+        .gallery-detail-entry-transition {
+          border-radius: 3px;
+          box-shadow: 0 24px 72px rgba(0, 0, 0, 0.42);
+          opacity: 1;
+          transform-origin: left top;
+          transition:
+            transform ${GALLERY_DETAIL_TRANSITION_DURATION_MS}ms
+              cubic-bezier(0.16, 1, 0.3, 1),
+            width ${GALLERY_DETAIL_TRANSITION_DURATION_MS}ms
+              cubic-bezier(0.16, 1, 0.3, 1),
+            height ${GALLERY_DETAIL_TRANSITION_DURATION_MS}ms
+              cubic-bezier(0.16, 1, 0.3, 1),
+            border-radius ${GALLERY_DETAIL_TRANSITION_DURATION_MS}ms
+              cubic-bezier(0.16, 1, 0.3, 1),
+            box-shadow ${GALLERY_DETAIL_TRANSITION_DURATION_MS}ms
+              cubic-bezier(0.16, 1, 0.3, 1),
+            opacity 110ms ease;
+          will-change: transform, width, height, opacity;
+        }
+
+        .gallery-detail-entry-transition[data-phase='end'] {
+          border-radius: 0;
+          box-shadow: 0 30px 90px rgba(0, 0, 0, 0.55);
+        }
+
+        .gallery-detail-entry-transition[data-phase='fade'] {
+          border-radius: 0;
+          opacity: 0;
         }
       `}</style>
     </main>

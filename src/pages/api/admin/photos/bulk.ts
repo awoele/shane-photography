@@ -2,10 +2,13 @@ import type { NextApiRequest, NextApiResponse } from 'next';
 
 import {
   bulkUpdateCmsPhotos,
+  type CmsBulkSequenceInput,
   type CmsBulkUpdateInput,
   type CmsPhotoPatch,
   type CmsPhotoStatus,
   deleteCmsPhotos,
+  restoreCmsPhotos,
+  sequenceCmsPhotos,
 } from '@/lib/server/photoCms';
 
 type BulkResponse =
@@ -17,6 +20,8 @@ type BulkResponse =
       error: string;
     };
 
+type BulkAction = 'patch' | 'restore' | 'sequence';
+
 const toPatch = (value: unknown): CmsPhotoPatch => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return {};
@@ -24,6 +29,10 @@ const toPatch = (value: unknown): CmsPhotoPatch => {
 
   const record = value as Record<string, unknown>;
   const { status } = record;
+  const sortOrder =
+    typeof record.sortOrder === 'number' && Number.isFinite(record.sortOrder)
+      ? record.sortOrder
+      : undefined;
   const nextStatus =
     status === 'draft' || status === 'hidden' || status === 'published'
       ? (status as CmsPhotoStatus)
@@ -34,11 +43,37 @@ const toPatch = (value: unknown): CmsPhotoPatch => {
       ? { category: record.category }
       : {}),
     ...(nextStatus ? { status: nextStatus } : {}),
+    ...(sortOrder !== undefined ? { sortOrder } : {}),
     ...(Array.isArray(record.tags) ? { tags: record.tags } : {}),
+    ...(typeof record.title === 'string' ? { title: record.title } : {}),
   };
 };
 
-const toInput = (body: unknown): CmsBulkUpdateInput | null => {
+const toAction = (value: unknown): BulkAction =>
+  value === 'restore' || value === 'sequence' ? value : 'patch';
+
+const toNumberInput = (value: unknown) => {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (typeof value === 'string') {
+    const parsed = Number.parseInt(value, 10);
+
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+
+  return undefined;
+};
+
+const toInput = (
+  body: unknown,
+):
+  | (CmsBulkUpdateInput & {
+      action: BulkAction;
+      sequence: CmsBulkSequenceInput;
+    })
+  | null => {
   if (!body || typeof body !== 'object' || Array.isArray(body)) {
     return null;
   }
@@ -53,8 +88,18 @@ const toInput = (body: unknown): CmsBulkUpdateInput | null => {
   }
 
   return {
+    action: toAction(record.action),
     ids,
     patch: toPatch(record.patch),
+    sequence: {
+      ids,
+      sortStart: toNumberInput(record.sortStart),
+      titlePrefix:
+        typeof record.titlePrefix === 'string'
+          ? record.titlePrefix.trim()
+          : undefined,
+      titleStart: toNumberInput(record.titleStart),
+    },
   };
 };
 
@@ -81,6 +126,22 @@ const handler = async (
 
       response.setHeader('Cache-Control', 'no-store, max-age=0');
       response.status(200).json({ deleted: result.deleted, updated: 0 });
+      return;
+    }
+
+    if (input.action === 'restore') {
+      const result = await restoreCmsPhotos(input.ids);
+
+      response.setHeader('Cache-Control', 'no-store, max-age=0');
+      response.status(200).json(result);
+      return;
+    }
+
+    if (input.action === 'sequence') {
+      const result = await sequenceCmsPhotos(input.sequence);
+
+      response.setHeader('Cache-Control', 'no-store, max-age=0');
+      response.status(200).json(result);
       return;
     }
 

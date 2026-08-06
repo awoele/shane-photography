@@ -31,7 +31,10 @@ const buildPhoto = (
   width: 1800,
 });
 
-const withCmsFile = async <T>(records: unknown[], run: () => Promise<T>) => {
+const withCmsFile = async <T>(
+  records: unknown[],
+  run: (filePath: string) => Promise<T>,
+) => {
   const root = await mkdtemp(path.join(tmpdir(), 'photo-cms-manifest-'));
   const filePath = path.join(root, 'photo-cms.json');
   await mkdir(path.dirname(filePath), { recursive: true });
@@ -40,7 +43,7 @@ const withCmsFile = async <T>(records: unknown[], run: () => Promise<T>) => {
   process.env.PHOTO_CMS_DATA_FILE = filePath;
 
   try {
-    return await run();
+    return await run(filePath);
   } finally {
     if (previousPath === undefined) {
       delete process.env.PHOTO_CMS_DATA_FILE;
@@ -84,4 +87,97 @@ test('fetchManagedPhotoSet returns public view models and loader data from CMS',
       photoSet.photos[0]?.src,
     );
   });
+});
+
+test('fetchManagedPhotoSet reuses the public manifest cache until cacheBust', async () => {
+  await withCmsFile(
+    [buildPhoto('published-003', 'published')],
+    async (filePath) => {
+      const first = await fetchManagedPhotoSet();
+
+      await writeFile(
+        filePath,
+        JSON.stringify([buildPhoto('published-004', 'published')], null, 2),
+        'utf8',
+      );
+
+      const cached = await fetchManagedPhotoSet();
+      const refreshed = await fetchManagedPhotoSet({ cacheBust: true });
+
+      assert.deepEqual(
+        first.photos.map((photo) => photo.id),
+        ['published-003'],
+      );
+      assert.deepEqual(
+        cached.photos.map((photo) => photo.id),
+        ['published-003'],
+      );
+      assert.deepEqual(
+        refreshed.photos.map((photo) => photo.id),
+        ['published-004'],
+      );
+    },
+  );
+});
+
+test('fetchManagedManifest uses the cloud CMS list without fetching photos twice', async () => {
+  const previousCloud = process.env.PHOTO_CMS_CLOUD;
+  const previousFetch = globalThis.fetch;
+  const previousLocalOverrides = process.env.PHOTO_CMS_INCLUDE_LOCAL_OVERRIDES;
+  const previousVercel = process.env.VERCEL;
+  let photosJsonFetches = 0;
+
+  process.env.PHOTO_CMS_CLOUD = 'true';
+  process.env.PHOTO_CMS_INCLUDE_LOCAL_OVERRIDES = 'false';
+  process.env.VERCEL = '1';
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = String(input);
+
+    if (url.includes('photo-cms-overrides')) {
+      return new Response(JSON.stringify([]), { status: 200 });
+    }
+
+    if (url.includes('photos.json')) {
+      photosJsonFetches += 1;
+
+      return new Response(
+        JSON.stringify([buildPhoto('published-005', 'published')]),
+        { status: 200 },
+      );
+    }
+
+    return new Response(JSON.stringify({ error: 'Unexpected URL' }), {
+      status: 404,
+    });
+  }) as typeof fetch;
+
+  try {
+    const manifest = await fetchManagedManifest({ cacheBust: true });
+
+    assert.deepEqual(
+      manifest.data.map((photo) => photo.id),
+      ['published-005'],
+    );
+    assert.equal(photosJsonFetches, 1);
+  } finally {
+    globalThis.fetch = previousFetch;
+
+    if (previousCloud === undefined) {
+      delete process.env.PHOTO_CMS_CLOUD;
+    } else {
+      process.env.PHOTO_CMS_CLOUD = previousCloud;
+    }
+
+    if (previousLocalOverrides === undefined) {
+      delete process.env.PHOTO_CMS_INCLUDE_LOCAL_OVERRIDES;
+    } else {
+      process.env.PHOTO_CMS_INCLUDE_LOCAL_OVERRIDES = previousLocalOverrides;
+    }
+
+    if (previousVercel === undefined) {
+      delete process.env.VERCEL;
+    } else {
+      process.env.VERCEL = previousVercel;
+    }
+  }
 });

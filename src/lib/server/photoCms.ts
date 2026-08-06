@@ -1,7 +1,12 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import { fetchPhotos, getPhotoTimestamp, type Photo } from '../photos';
+import {
+  comparePhotosByManagedOrder,
+  fetchPhotos,
+  type Photo,
+  STORAGE_BASE_URL,
+} from '../photos';
 
 export const CMS_PHOTO_STATUSES = ['draft', 'published', 'hidden'] as const;
 
@@ -9,6 +14,7 @@ export type CmsPhotoStatus = (typeof CMS_PHOTO_STATUSES)[number];
 
 export type CmsPhoto = Photo & {
   createdAt: string;
+  deleted?: boolean;
   featured: boolean;
   status: CmsPhotoStatus;
   updatedAt: string;
@@ -75,8 +81,10 @@ export type CmsPhotoPatch = Partial<
     | 'lens'
     | 'location'
     | 'manifestLocation'
+    | 'originalCategory'
     | 'rating'
     | 'shutterSpeed'
+    | 'sortOrder'
     | 'status'
     | 'tags'
     | 'thumbnail'
@@ -87,14 +95,22 @@ export type CmsPhotoPatch = Partial<
 
 export type CmsPhotoListOptions = {
   category?: string;
+  includeDeleted?: boolean;
   publishedOnly?: boolean;
   query?: string;
-  status?: CmsPhotoStatus | 'all';
+  status?: CmsPhotoStatus | 'all' | 'removed';
 };
 
 export type CmsBulkUpdateInput = {
   ids: string[];
   patch: CmsPhotoPatch;
+};
+
+export type CmsBulkSequenceInput = {
+  ids: string[];
+  sortStart?: number;
+  titlePrefix?: string;
+  titleStart?: number;
 };
 
 export type CmsStats = {
@@ -104,8 +120,17 @@ export type CmsStats = {
 };
 
 type CmsPhotoRecord = Partial<CmsPhoto> & Partial<Photo>;
+type CmsPhotoOverride = CmsPhotoPatch & {
+  createdAt?: string;
+  deleted?: boolean;
+  id: string;
+  updatedAt?: string;
+};
 type CmsProcessingJobRecord = Partial<CmsProcessingJob>;
 type CmsSettingsRecord = Partial<CmsSettings>;
+
+const CMS_OVERRIDES_JSON_PATH = 'data/photo-cms-overrides.json';
+const CMS_OVERRIDES_JSON_URL = `${STORAGE_BASE_URL}/${CMS_OVERRIDES_JSON_PATH}`;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   Boolean(value && typeof value === 'object' && !Array.isArray(value));
@@ -162,12 +187,24 @@ const getCmsJobsFilePath = () => getCmsSiblingFilePath('photo-cms-jobs.json');
 const getCmsSettingsFilePath = () =>
   getCmsSiblingFilePath('photo-cms-settings.json');
 
+const shouldUseCloudCms = () => {
+  if (process.env.PHOTO_CMS_CLOUD === 'true') {
+    return true;
+  }
+
+  if (process.env.PHOTO_CMS_CLOUD === 'false') {
+    return false;
+  }
+
+  if (process.env.VERCEL === '1') {
+    return true;
+  }
+
+  return !process.env.PHOTO_CMS_DATA_FILE;
+};
+
 const sortCmsPhotos = (photos: CmsPhoto[]) =>
-  [...photos].sort(
-    (first, second) =>
-      getPhotoTimestamp(second) - getPhotoTimestamp(first) ||
-      first.id.localeCompare(second.id),
-  );
+  [...photos].sort(comparePhotosByManagedOrder);
 
 const normalizeCmsPhoto = (item: unknown): CmsPhoto | null => {
   if (!isRecord(item)) {
@@ -196,6 +233,7 @@ const normalizeCmsPhoto = (item: unknown): CmsPhoto | null => {
     date: toText(record.date),
     dateTaken: toText(record.dateTaken),
     description: toText(record.description),
+    ...(record.deleted === true ? { deleted: true } : {}),
     featured: record.featured === true,
     focalLength: toText(record.focalLength),
     height: toNumber(record.height),
@@ -203,6 +241,7 @@ const normalizeCmsPhoto = (item: unknown): CmsPhoto | null => {
     iso: toText(record.iso),
     lens: toText(record.lens),
     location: toText(record.location),
+    originalCategory: toText(record.originalCategory) || category,
     shutterSpeed: toText(record.shutterSpeed),
     src,
     status: isCmsStatus(record.status) ? record.status : 'published',
@@ -224,6 +263,9 @@ const normalizeCmsPhoto = (item: unknown): CmsPhoto | null => {
       : {}),
     ...(record.rating ? { rating: toNumber(record.rating) } : {}),
     ...(record.s3Key ? { s3Key: toText(record.s3Key) } : {}),
+    ...(record.sortOrder !== undefined
+      ? { sortOrder: toNumber(record.sortOrder) }
+      : {}),
     ...(normalizeTags(record.tags).length
       ? { tags: normalizeTags(record.tags) }
       : {}),
@@ -231,6 +273,79 @@ const normalizeCmsPhoto = (item: unknown): CmsPhoto | null => {
     ...(record.toneAnalysis ? { toneAnalysis: record.toneAnalysis } : {}),
     ...(record.video ? { video: record.video } : {}),
   };
+};
+
+const normalizeCmsOverride = (item: unknown): CmsPhotoOverride | null => {
+  if (!isRecord(item)) {
+    return null;
+  }
+
+  const record = item as Partial<CmsPhotoOverride>;
+  const id = toText(record.id);
+
+  if (!id) {
+    return null;
+  }
+
+  const tags = normalizeTags(record.tags);
+  const override: CmsPhotoOverride = {
+    id,
+    ...(record.aperture !== undefined
+      ? { aperture: toText(record.aperture) }
+      : {}),
+    ...(record.camera !== undefined ? { camera: toText(record.camera) } : {}),
+    ...(record.category !== undefined
+      ? { category: toText(record.category) }
+      : {}),
+    ...(record.createdAt !== undefined
+      ? { createdAt: toText(record.createdAt) }
+      : {}),
+    ...(record.date !== undefined ? { date: toText(record.date) } : {}),
+    ...(record.dateTaken !== undefined
+      ? { dateTaken: toText(record.dateTaken) }
+      : {}),
+    ...(record.deleted === true ? { deleted: true } : {}),
+    ...(record.description !== undefined
+      ? { description: toText(record.description) }
+      : {}),
+    ...(record.featured !== undefined
+      ? { featured: record.featured === true }
+      : {}),
+    ...(record.focalLength !== undefined
+      ? { focalLength: toText(record.focalLength) }
+      : {}),
+    ...(record.height !== undefined ? { height: toNumber(record.height) } : {}),
+    ...(record.iso !== undefined ? { iso: toText(record.iso) } : {}),
+    ...(record.lens !== undefined ? { lens: toText(record.lens) } : {}),
+    ...(record.location !== undefined
+      ? { location: toText(record.location) }
+      : {}),
+    ...(record.manifestLocation
+      ? { manifestLocation: record.manifestLocation }
+      : {}),
+    ...(record.originalCategory !== undefined
+      ? { originalCategory: toText(record.originalCategory) }
+      : {}),
+    ...(record.rating !== undefined ? { rating: toNumber(record.rating) } : {}),
+    ...(record.shutterSpeed !== undefined
+      ? { shutterSpeed: toText(record.shutterSpeed) }
+      : {}),
+    ...(record.sortOrder !== undefined
+      ? { sortOrder: toNumber(record.sortOrder) }
+      : {}),
+    ...(isCmsStatus(record.status) ? { status: record.status } : {}),
+    ...(tags.length > 0 ? { tags } : {}),
+    ...(record.thumbnail !== undefined
+      ? { thumbnail: toText(record.thumbnail) }
+      : {}),
+    ...(record.title !== undefined ? { title: toText(record.title) } : {}),
+    ...(record.updatedAt !== undefined
+      ? { updatedAt: toText(record.updatedAt) }
+      : {}),
+    ...(record.width !== undefined ? { width: toNumber(record.width) } : {}),
+  };
+
+  return override;
 };
 
 const isProcessingStatus = (value: unknown): value is CmsProcessingStatus =>
@@ -310,6 +425,64 @@ const photoToCmsPhoto = (photo: Photo): CmsPhoto => {
   };
 };
 
+const cmsPhotoToOverride = (photo: CmsPhoto): CmsPhotoOverride => ({
+  aperture: photo.aperture,
+  camera: photo.camera,
+  category: photo.category,
+  createdAt: photo.createdAt,
+  date: photo.date,
+  dateTaken: photo.dateTaken,
+  deleted: photo.deleted,
+  description: photo.description,
+  featured: photo.featured,
+  focalLength: photo.focalLength,
+  height: photo.height,
+  id: photo.id,
+  iso: photo.iso,
+  lens: photo.lens,
+  location: photo.location,
+  manifestLocation: photo.manifestLocation,
+  originalCategory: photo.originalCategory,
+  rating: photo.rating,
+  shutterSpeed: photo.shutterSpeed,
+  sortOrder: photo.sortOrder,
+  status: photo.status,
+  tags: photo.tags,
+  thumbnail: photo.thumbnail,
+  title: photo.title,
+  updatedAt: photo.updatedAt,
+  width: photo.width,
+});
+
+const fetchRemoteCmsOverrides = async () => {
+  const url =
+    process.env.PHOTO_CMS_OVERRIDES_URL ||
+    `${CMS_OVERRIDES_JSON_URL}?t=${Date.now()}`;
+
+  const response = await fetch(url, {
+    cache: 'no-store',
+    headers: {
+      accept: 'application/json',
+      'cache-control': 'no-cache',
+      pragma: 'no-cache',
+    },
+  });
+
+  if (response.status === 404) {
+    return [];
+  }
+
+  if (!response.ok) {
+    throw new Error(
+      `Could not load photo CMS overrides: ${response.status} ${response.statusText}`,
+    );
+  }
+
+  const data: unknown = await response.json();
+
+  return Array.isArray(data) ? data : [];
+};
+
 const readCmsFile = async () => {
   const filePath = getCmsDataFilePath();
   const text = await readFile(filePath, 'utf8');
@@ -320,6 +493,155 @@ const readCmsFile = async () => {
   }
 
   return data;
+};
+
+const readBundledCmsOverrides = async () => {
+  if (process.env.PHOTO_CMS_INCLUDE_LOCAL_OVERRIDES === 'false') {
+    return [];
+  }
+
+  try {
+    return (await readCmsFile())
+      .map(normalizeCmsPhoto)
+      .filter((photo): photo is CmsPhoto => photo !== null)
+      .map(cmsPhotoToOverride);
+  } catch (error) {
+    const missingFile =
+      error instanceof Error &&
+      ('code' in error ? (error as NodeJS.ErrnoException).code : '') ===
+        'ENOENT';
+
+    if (missingFile) {
+      return [];
+    }
+
+    throw error;
+  }
+};
+
+const loadCloudCmsOverrides = async () => {
+  const [bundledOverrides, remoteOverrides] = await Promise.all([
+    readBundledCmsOverrides(),
+    fetchRemoteCmsOverrides(),
+  ]);
+
+  return [...bundledOverrides, ...remoteOverrides]
+    .map(normalizeCmsOverride)
+    .filter((override): override is CmsPhotoOverride => override !== null);
+};
+
+const mergeCloudCmsPhotos = (
+  photos: Photo[],
+  overrides: CmsPhotoOverride[],
+  { includeDeleted = false }: { includeDeleted?: boolean } = {},
+) => {
+  const overridesById = new Map<string, CmsPhotoOverride>();
+
+  overrides.forEach((override) => {
+    overridesById.set(override.id, {
+      ...(overridesById.get(override.id) ?? { id: override.id }),
+      ...override,
+    });
+  });
+
+  return sortCmsPhotos(
+    photos
+      .map((photo) => {
+        const override = overridesById.get(photo.id);
+
+        if (override?.deleted && !includeDeleted) {
+          return null;
+        }
+
+        return normalizeCmsPhoto({
+          ...photoToCmsPhoto(photo),
+          deleted: override?.deleted === true,
+          originalCategory: photo.category,
+          ...override,
+          id: photo.id,
+          src: photo.src,
+        });
+      })
+      .filter((photo): photo is CmsPhoto => photo !== null),
+  );
+};
+
+const loadCloudCmsPhotos = async ({
+  includeDeleted = false,
+}: {
+  includeDeleted?: boolean;
+} = {}) => {
+  const [photos, overrides] = await Promise.all([
+    fetchPhotos({ cacheBust: true }),
+    loadCloudCmsOverrides(),
+  ]);
+
+  return mergeCloudCmsPhotos(photos, overrides, { includeDeleted });
+};
+
+const readFunctionResponse = async (response: Response) => {
+  const text = await response.text();
+
+  if (!text) {
+    return {};
+  }
+
+  try {
+    return JSON.parse(text) as Record<string, unknown>;
+  } catch (_error) {
+    return { error: text };
+  }
+};
+
+const callCmsMutationFunction = async (body: Record<string, unknown>) => {
+  const processFunctionUrl = String(
+    process.env.PROCESS_FUNCTION_URL ?? '',
+  ).trim();
+  const processFunctionSecret = String(
+    process.env.PROCESS_FUNCTION_SECRET ??
+      process.env.UPLOAD_FUNCTION_SECRET ??
+      '',
+  ).trim();
+
+  if (!processFunctionUrl || !processFunctionSecret) {
+    throw new Error(
+      'PROCESS_FUNCTION_URL or PROCESS_FUNCTION_SECRET is not configured.',
+    );
+  }
+
+  const response = await fetch(processFunctionUrl, {
+    body: JSON.stringify(body),
+    headers: {
+      Authorization: `Bearer ${processFunctionSecret}`,
+      'Content-Type': 'application/json',
+      'x-process-function-secret': processFunctionSecret,
+    },
+    method: 'POST',
+  });
+  const data = await readFunctionResponse(response);
+
+  if (!response.ok) {
+    throw new Error(
+      typeof data.error === 'string'
+        ? data.error
+        : `CMS mutation failed with status ${response.status}.`,
+    );
+  }
+
+  return data;
+};
+
+const getCmsMutationCount = (
+  data: Record<string, unknown>,
+  key: 'deleted' | 'updated',
+) => {
+  const value = data[key];
+
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+
+  throw new Error(`CMS mutation did not return a ${key} count.`);
 };
 
 const readCmsJobsFile = async () => {
@@ -398,10 +720,16 @@ const saveCmsSettings = async (settings: CmsSettings) => {
 };
 
 export const loadCmsPhotos = async ({
+  includeDeleted = false,
   seedFromLegacy = false,
 }: {
+  includeDeleted?: boolean;
   seedFromLegacy?: boolean;
 } = {}) => {
+  if (shouldUseCloudCms()) {
+    return loadCloudCmsPhotos({ includeDeleted });
+  }
+
   try {
     const data = await readCmsFile();
 
@@ -437,45 +765,84 @@ export const listCmsPhotos = async (options: CmsPhotoListOptions = {}) => {
   const query = toText(options.query).toLowerCase();
   const category = toText(options.category).toLowerCase();
   const status = options.status || 'all';
-
-  return (await loadCmsPhotos({ seedFromLegacy: true })).filter((photo) => {
-    if (options.publishedOnly && photo.status !== 'published') {
-      return false;
-    }
-
-    if (status !== 'all' && photo.status !== status) {
-      return false;
-    }
-
-    if (category && category !== 'all' && photo.category !== category) {
-      return false;
-    }
-
-    if (!query) {
-      return true;
-    }
-
-    return [
-      photo.id,
-      photo.title,
-      photo.category,
-      photo.description,
-      photo.location,
-      photo.camera,
-      photo.lens,
-      photo.tags?.join(' '),
-    ]
-      .filter(Boolean)
-      .join(' ')
-      .toLowerCase()
-      .includes(query);
+  const photos = await loadCmsPhotos({
+    includeDeleted: options.includeDeleted,
+    seedFromLegacy: true,
   });
+
+  return sortCmsPhotos(
+    photos.filter((photo) => {
+      if (!options.includeDeleted && photo.deleted) {
+        return false;
+      }
+
+      if (
+        options.publishedOnly &&
+        (photo.status !== 'published' || photo.deleted)
+      ) {
+        return false;
+      }
+
+      if (status === 'removed') {
+        return photo.deleted === true;
+      }
+
+      if (status !== 'all' && photo.status !== status) {
+        return false;
+      }
+
+      if (category && category !== 'all' && photo.category !== category) {
+        return false;
+      }
+
+      if (!query) {
+        return true;
+      }
+
+      return [
+        photo.id,
+        photo.title,
+        photo.category,
+        photo.originalCategory,
+        photo.description,
+        photo.location,
+        photo.camera,
+        photo.lens,
+        photo.tags?.join(' '),
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase()
+        .includes(query);
+    }),
+  );
 };
 
 export const getPublishedCmsPhotos = () =>
   listCmsPhotos({ publishedOnly: true });
 
 export const updateCmsPhoto = async (id: string, patch: CmsPhotoPatch) => {
+  if (shouldUseCloudCms()) {
+    const result = await callCmsMutationFunction({
+      cmsAction: 'patch',
+      id,
+      patch,
+    });
+    const updated = getCmsMutationCount(result, 'updated');
+
+    if (updated < 1) {
+      throw new Error(`Photo ${id} was not updated.`);
+    }
+
+    const photo = (await loadCloudCmsPhotos()).find((item) => item.id === id);
+
+    if (!photo) {
+      throw new Error(`Photo ${id} was not found.`);
+    }
+
+    return photo;
+  }
+
   const photos = await loadCmsPhotos({ seedFromLegacy: true });
   const index = photos.findIndex((photo) => photo.id === id);
 
@@ -504,6 +871,12 @@ export const createCmsPhoto = async (
   photo: Pick<CmsPhoto, 'id' | 'src' | 'thumbnail'> &
     Partial<Omit<CmsPhoto, 'createdAt' | 'id' | 'src' | 'thumbnail'>>,
 ) => {
+  if (shouldUseCloudCms()) {
+    throw new Error(
+      'Cloud CMS photos are created by uploading and processing incoming files.',
+    );
+  }
+
   const photos = await loadCmsPhotos({ seedFromLegacy: true });
   const existing = photos.find((item) => item.id === photo.id);
 
@@ -548,13 +921,143 @@ export const createCmsPhoto = async (
 
 export const deleteCmsPhotos = async (ids: string[]) => {
   const selectedIds = new Set(ids.map(toText).filter(Boolean));
+
+  if (shouldUseCloudCms()) {
+    const data = await callCmsMutationFunction({
+      cmsAction: 'delete',
+      ids: Array.from(selectedIds),
+    });
+
+    return {
+      deleted: getCmsMutationCount(data, 'deleted'),
+    };
+  }
+
   const photos = await loadCmsPhotos({ seedFromLegacy: true });
-  const nextPhotos = photos.filter((photo) => !selectedIds.has(photo.id));
+  const now = getNow();
+  let deleted = 0;
+
+  const nextPhotos = photos.map((photo) => {
+    if (!selectedIds.has(photo.id)) {
+      return photo;
+    }
+
+    deleted += 1;
+
+    return {
+      ...photo,
+      deleted: true,
+      status: 'hidden' as const,
+      updatedAt: now,
+    };
+  });
 
   await saveCmsPhotos(nextPhotos);
 
   return {
-    deleted: photos.length - nextPhotos.length,
+    deleted,
+  };
+};
+
+export const restoreCmsPhotos = async (ids: string[]) => {
+  const selectedIds = new Set(ids.map(toText).filter(Boolean));
+
+  if (shouldUseCloudCms()) {
+    const data = await callCmsMutationFunction({
+      cmsAction: 'restore',
+      ids: Array.from(selectedIds),
+    });
+
+    return {
+      updated: getCmsMutationCount(data, 'updated'),
+    };
+  }
+
+  const photos = await loadCmsPhotos({
+    includeDeleted: true,
+    seedFromLegacy: true,
+  });
+  let updated = 0;
+  const now = getNow();
+
+  const nextPhotos = photos.map((photo) => {
+    if (!selectedIds.has(photo.id)) {
+      return photo;
+    }
+
+    updated += 1;
+
+    return {
+      ...photo,
+      deleted: false,
+      status: photo.status === 'hidden' ? 'published' : photo.status,
+      updatedAt: now,
+    };
+  });
+
+  await saveCmsPhotos(nextPhotos);
+
+  return {
+    updated,
+  };
+};
+
+export const sequenceCmsPhotos = async ({
+  ids,
+  sortStart,
+  titlePrefix,
+  titleStart,
+}: CmsBulkSequenceInput) => {
+  const selectedIds = ids.map(toText).filter(Boolean);
+
+  if (shouldUseCloudCms()) {
+    const data = await callCmsMutationFunction({
+      cmsAction: 'sequence',
+      ids: selectedIds,
+      ...(typeof sortStart === 'number' ? { sortStart } : {}),
+      ...(toText(titlePrefix) ? { titlePrefix: toText(titlePrefix) } : {}),
+      ...(typeof titleStart === 'number' ? { titleStart } : {}),
+    });
+
+    return {
+      updated: getCmsMutationCount(data, 'updated'),
+    };
+  }
+
+  const selectedById = new Map(selectedIds.map((id, index) => [id, index]));
+  const photos = await loadCmsPhotos({
+    includeDeleted: true,
+    seedFromLegacy: true,
+  });
+  let updated = 0;
+  const now = getNow();
+  const cleanTitlePrefix = toText(titlePrefix);
+
+  const nextPhotos = photos.map((photo) => {
+    const selectedIndex = selectedById.get(photo.id);
+
+    if (selectedIndex === undefined) {
+      return photo;
+    }
+
+    updated += 1;
+
+    return {
+      ...photo,
+      ...(typeof sortStart === 'number'
+        ? { sortOrder: sortStart + selectedIndex }
+        : {}),
+      ...(cleanTitlePrefix
+        ? { title: `${cleanTitlePrefix}-${(titleStart ?? 1) + selectedIndex}` }
+        : {}),
+      updatedAt: now,
+    };
+  });
+
+  await saveCmsPhotos(nextPhotos);
+
+  return {
+    updated,
   };
 };
 
@@ -563,7 +1066,23 @@ export const bulkUpdateCmsPhotos = async ({
   patch,
 }: CmsBulkUpdateInput) => {
   const selectedIds = new Set(ids.map(toText).filter(Boolean));
-  const photos = await loadCmsPhotos({ seedFromLegacy: true });
+
+  if (shouldUseCloudCms()) {
+    const data = await callCmsMutationFunction({
+      cmsAction: 'bulkPatch',
+      ids: Array.from(selectedIds),
+      patch,
+    });
+
+    return {
+      updated: getCmsMutationCount(data, 'updated'),
+    };
+  }
+
+  const photos = await loadCmsPhotos({
+    includeDeleted: true,
+    seedFromLegacy: true,
+  });
   let updated = 0;
   const now = getNow();
 
@@ -695,11 +1214,13 @@ export const getCmsStats = async (): Promise<CmsStats> => {
     total: photos.length,
   };
 
-  photos.forEach((photo) => {
-    stats.statusCounts[photo.status] += 1;
-    stats.categoryCounts[photo.category] =
-      (stats.categoryCounts[photo.category] ?? 0) + 1;
-  });
+  photos
+    .filter((photo) => !photo.deleted)
+    .forEach((photo) => {
+      stats.statusCounts[photo.status] += 1;
+      stats.categoryCounts[photo.category] =
+        (stats.categoryCounts[photo.category] ?? 0) + 1;
+    });
 
   return stats;
 };

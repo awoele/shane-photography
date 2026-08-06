@@ -1,7 +1,7 @@
 export const AppConfig = {
-  site_name: 'Shane Afilmory Gallery',
-  title: 'Shane Afilmory Gallery',
+  site_name: 'Xuan Yi Afilmory Gallery',
+  title: 'Xuan Yi Afilmory Gallery',
   description:
-    'A dark personal photography archive with Afilmory-inspired browsing.',
+    'A visual sanctuary of light, shadows, and the unseen aura of countless landscapes.',
   locale: 'en',
 };

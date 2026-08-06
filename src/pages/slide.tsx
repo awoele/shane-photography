@@ -6,12 +6,30 @@ import { useRouter } from 'next/router';
 import type {
   CSSProperties,
   KeyboardEvent as ReactKeyboardEvent,
+  MouseEvent as ReactMouseEvent,
   PointerEvent as ReactPointerEvent,
+  WheelEvent as ReactWheelEvent,
 } from 'react';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+import type { Swiper as SwiperInstance } from 'swiper';
+import { Swiper, SwiperSlide } from 'swiper/react';
 
 import { Meta } from '@/layout/Meta';
-import { buildPhotoDetailHref } from '@/lib/navigation';
+import { getOrderedGalleryPhotos } from '@/lib/galleryOrdering';
+import {
+  buildPhotoDetailHref,
+  createGalleryScrollSnapshot,
+  GALLERY_SCROLL_STORAGE_KEY,
+  readGalleryScrollSnapshot,
+  shouldHardNavigateAfterClientRouteFailure,
+} from '@/lib/navigation';
 import {
   formatCameraName,
   formatIso,
@@ -19,14 +37,47 @@ import {
   getPhotoTitle,
   type Photo,
   type PhotoSortMode,
-  shufflePhotos,
 } from '@/lib/photos';
+import { PUBLIC_GALLERY_CACHE_CONTROL } from '@/lib/server/cacheHeaders';
+import {
+  getSlideCardAspectStyle,
+  getSlideFlipCardAspectStyle,
+} from '@/lib/slideCardSizing';
+import {
+  getSlideImageLoading,
+  shouldRenderSlideImage,
+} from '@/lib/slideImageLoading';
+import {
+  SLIDE_ACTIVE_SCALE,
+  SLIDE_ACTIVE_SCALE_MOBILE,
+  SLIDE_CARD_TRANSFORM_DURATION_MS,
+  SLIDE_RESISTANCE_RATIO,
+  SLIDE_SCROLL_DURATION_MS,
+  SLIDE_TOUCH_THRESHOLD_PX,
+} from '@/lib/slideMotion';
+import {
+  buildSlideCurrentHref,
+  buildSlideProofHref,
+  guardSlideProofNavigationEvent,
+} from '@/lib/slideNavigation';
 import {
   isPortraitViewport,
   isSlideMobileViewport,
-  requestSlideFullscreen,
   requestSlideLandscape,
 } from '@/lib/slideOrientation';
+import {
+  getSlideProgressDisplayIndex,
+  getSlideProgressIndex,
+  getSlideProgressPercent,
+  getSlideProgressVisualIndexFromSlidesGrid,
+} from '@/lib/slideProgress';
+import {
+  getSlideRenderWindow,
+  getSlideRenderWindowLocalIndex,
+  shouldRecenterSlideRenderWindow,
+} from '@/lib/slideRenderWindow';
+import { shouldPreventSlideDocumentTouchMove } from '@/lib/slideTouchScroll';
+import { getSlideWheelOffset } from '@/lib/slideWheel';
 import { AppConfig } from '@/utils/AppConfig';
 
 type SlidePageProps = {
@@ -38,27 +89,22 @@ type SlidePageProps = {
   sortMode: PhotoSortMode | '';
 };
 
-type CardMetrics = {
-  center: number;
-  index: number;
-};
-
 type PendingPointer = {
   index: number;
-  scrollLeft: number;
   x: number;
   y: number;
 };
 
-const SCROLL_TO_CENTER_DELAY_MS = 80;
 const CLICK_MOVEMENT_LIMIT_PX = 9;
 const FLIP_DURATION_MS = 720;
 const FLIP_CLOSE_DURATION_MS = 820;
-const OPEN_FLIP_DELAY_MS = 150;
-const SLIDE_SCROLL_DURATION_MS = 680;
-const WHEEL_SCROLL_DURATION_MS = 360;
+const OPEN_FLIP_DELAY_MS = 90;
 const SLIDE_CHROME_IDLE_DELAY_MS = 2400;
-const FALLBACK_ASPECT_RATIO = 3 / 2;
+const SLIDE_RENDER_WINDOW_RADIUS = 7;
+const SLIDE_RENDER_WINDOW_RECENTER_MARGIN = 3;
+const SLIDE_WHEEL_COOLDOWN_MS = 260;
+const useIsomorphicLayoutEffect =
+  typeof window === 'undefined' ? useEffect : useLayoutEffect;
 
 const getQueryId = (value: string | string[] | undefined) =>
   Array.isArray(value) ? value[0] : value;
@@ -92,62 +138,13 @@ const getQueryCategory = (value: string | string[] | undefined) => {
   return category && category !== 'all' ? category : '';
 };
 
-const getSafeAspectRatio = (photo: Photo) => {
-  if (photo.width > 0 && photo.height > 0) {
-    return photo.width / photo.height;
-  }
-
-  return FALLBACK_ASPECT_RATIO;
-};
-
-type SlideCardAspectStyle = CSSProperties & {
-  '--slide-card-width-default': string;
-  '--slide-card-width-desktop-portrait': string;
-  '--slide-card-width-landscape': string;
-  '--slide-card-width-mobile-portrait': string;
-};
-
 type SlideCardVisualStyle = CSSProperties & {
   '--card-active-rotate': string;
   '--card-active-y': string;
-  '--card-leaving-rotate': string;
-  '--card-leaving-y': string;
   '--card-hover-rotate': string;
   '--card-hover-y': string;
   '--card-rotate': string;
   '--card-y': string;
-};
-
-const getAspectStyle = (photo: Photo): CSSProperties => {
-  const aspectRatio = getSafeAspectRatio(photo);
-
-  return {
-    aspectRatio: `${aspectRatio}`,
-  };
-};
-
-const getSlideCardAspectStyle = (photo: Photo): SlideCardAspectStyle => {
-  const aspectRatio = getSafeAspectRatio(photo);
-  const formatSize = (value: number) => value.toFixed(2);
-
-  return {
-    ...getAspectStyle(photo),
-    '--slide-card-width-default': `clamp(${formatSize(
-      250 * aspectRatio,
-    )}px, ${formatSize(57 * aspectRatio)}vh, ${formatSize(
-      520 * aspectRatio,
-    )}px)`,
-    '--slide-card-width-desktop-portrait': `min(${formatSize(
-      56 * aspectRatio,
-    )}vh, ${formatSize(680 * aspectRatio)}px)`,
-    '--slide-card-width-landscape': `min(${formatSize(
-      72 * aspectRatio,
-    )}svh, ${formatSize(360 * aspectRatio)}px)`,
-    '--slide-card-width-mobile-portrait': `min(${formatSize(
-      108 * aspectRatio,
-    )}vw, ${formatSize(420 * aspectRatio)}px)`,
-    width: 'var(--slide-card-width-default)',
-  };
 };
 
 const createPoseSeed = (photo: Photo, index: number) => {
@@ -182,15 +179,12 @@ const orderPhotos = ({
   seed: number;
   sortMode: PhotoSortMode | '';
 }) => {
-  const filteredPhotos = category
-    ? photos.filter((photo) => photo.category === category)
-    : photos;
-
-  if (sortMode === 'random') {
-    return shufflePhotos(filteredPhotos, seed);
-  }
-
-  return filteredPhotos;
+  return getOrderedGalleryPhotos({
+    category: category || 'all',
+    photos,
+    seed,
+    sortMode,
+  });
 };
 
 const findInitialIndex = (photos: Photo[], id?: string) => {
@@ -205,8 +199,6 @@ const findInitialIndex = (photos: Photo[], id?: string) => {
 
 const clamp = (value: number, min: number, max: number) =>
   Math.min(Math.max(value, min), max);
-
-const easeOutQuint = (value: number) => 1 - (1 - value) ** 5;
 
 const formatDate = (value: string) => {
   const normalized = value.trim();
@@ -255,8 +247,6 @@ const getCardStyle = ({
   return {
     '--card-active-rotate': `${(rotate * 0.24).toFixed(2)}deg`,
     '--card-active-y': '0px',
-    '--card-leaving-rotate': `${(rotate * 0.16).toFixed(2)}deg`,
-    '--card-leaving-y': '0px',
     '--card-hover-rotate': `${(rotate * 0.12).toFixed(2)}deg`,
     '--card-hover-y': '0px',
     '--card-rotate': `${rotate.toFixed(2)}deg`,
@@ -270,15 +260,13 @@ export const getServerSideProps: GetServerSideProps<SlidePageProps> = async ({
   query,
   res,
 }) => {
-  res.setHeader('Cache-Control', 'no-store, max-age=0');
+  res.setHeader('Cache-Control', PUBLIC_GALLERY_CACHE_CONTROL);
 
   try {
     const { fetchManagedPhotoSet } = await import(
       '@/lib/server/photoCmsManifest'
     );
-    const { photos: allPhotos } = await fetchManagedPhotoSet({
-      cacheBust: true,
-    });
+    const { photos: allPhotos } = await fetchManagedPhotoSet();
     const category = getQueryCategory(query.category);
     const sortMode = getQuerySortMode(query.sort);
     const randomSeed = getQuerySeed(query.seed);
@@ -368,16 +356,16 @@ const PhotoInfoOverlay = ({
       role="dialog"
       aria-modal="true"
       aria-label={`${title} photo information`}
-      className={`flip-overlay bg-black/68 fixed inset-0 z-[240] grid place-items-center px-4 py-5 backdrop-blur-[2px] ${
+      className={`flip-overlay bg-black/68 fixed inset-0 z-[420] grid place-items-center px-4 py-5 backdrop-blur-[2px] ${
         closing ? 'is-closing' : ''
       }`}
       onClick={onClose}
     >
       <div
-        className={`flip-overlay-card relative h-[min(78vh,680px)] max-h-[82vh] max-w-[92vw] [perspective:1400px] max-[900px]:landscape:h-[min(82vh,430px)] ${
+        className={`flip-overlay-card relative h-[var(--slide-card-height)] max-h-[min(82svh,680px)] max-w-[92vw] [perspective:1400px] ${
           flipped ? 'is-flipped' : ''
         } ${closing ? 'is-closing' : ''}`}
-        style={getAspectStyle(photo)}
+        style={getSlideFlipCardAspectStyle(photo)}
         onClick={(event) => event.stopPropagation()}
       >
         <button
@@ -408,37 +396,37 @@ const PhotoInfoOverlay = ({
           </div>
 
           <div
-            className="flip-info-face border-white/12 absolute inset-0 flex rounded-[22px] border bg-[linear-gradient(145deg,#1b1713_0%,#0d0b0a_54%,#18120f_100%)] p-6 text-center shadow-[0_34px_120px_rgba(0,0,0,0.86)] ring-1 ring-[#c6ded7]/20 [backface-visibility:hidden] [transform:rotateY(180deg)] sm:p-8 max-[900px]:landscape:p-5"
+            className="flip-info-face border-white/12 absolute inset-0 flex rounded-[22px] border bg-[linear-gradient(145deg,#1b1713_0%,#0d0b0a_54%,#18120f_100%)] p-5 text-center shadow-[0_34px_120px_rgba(0,0,0,0.86)] ring-1 ring-[#c6ded7]/20 [backface-visibility:hidden] [transform:rotateY(180deg)] sm:p-7 max-[900px]:landscape:p-4"
             onClick={onClose}
           >
-            <div className="m-auto flex max-h-full w-full max-w-[520px] flex-col items-center justify-center gap-3 overflow-hidden text-stone-100 max-[900px]:landscape:gap-2">
+            <div className="m-auto flex max-h-full w-full max-w-[500px] flex-col items-center justify-center gap-2.5 overflow-hidden text-stone-100 max-[900px]:landscape:gap-1.5">
               {infoLines.length > 0 ? (
                 <>
                   {photo.category ? (
-                    <p className="text-xs font-semibold uppercase tracking-[0.22em] text-[#a9c2bb] max-[900px]:landscape:text-[10px]">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-[#a9c2bb] max-[900px]:landscape:text-[9px]">
                       {photo.category}
                     </p>
                   ) : null}
                   {date ? (
-                    <p className="text-sm text-stone-300 max-[900px]:landscape:text-xs">
+                    <p className="text-xs text-stone-300 max-[900px]:landscape:text-[10px]">
                       {date}
                     </p>
                   ) : null}
-                  <h2 className="text-2xl font-semibold leading-tight text-stone-100 max-[900px]:landscape:text-lg">
+                  <h2 className="text-xl font-semibold leading-tight text-stone-100 sm:text-[22px] max-[900px]:landscape:text-base">
                     {title}
                   </h2>
                   {cameraLine ? (
-                    <p className="text-base font-medium leading-6 text-stone-100 max-[900px]:landscape:text-sm">
+                    <p className="text-sm font-medium leading-5 text-stone-100 max-[900px]:landscape:text-xs">
                       {cameraLine}
                     </p>
                   ) : null}
                   {exifLine ? (
-                    <p className="text-sm leading-6 text-stone-400 max-[900px]:landscape:text-xs max-[900px]:landscape:leading-5">
+                    <p className="text-xs leading-5 text-stone-400 max-[900px]:landscape:text-[10px] max-[900px]:landscape:leading-4">
                       {exifLine}
                     </p>
                   ) : null}
                   {description ? (
-                    <p className="line-clamp-5 pt-2 text-sm leading-7 text-stone-200 max-[900px]:landscape:line-clamp-3 max-[900px]:landscape:text-xs max-[900px]:landscape:leading-5">
+                    <p className="line-clamp-5 pt-1.5 text-xs leading-6 text-stone-200 max-[900px]:landscape:line-clamp-3 max-[900px]:landscape:text-[10px] max-[900px]:landscape:leading-4">
                       {description}
                     </p>
                   ) : null}
@@ -462,8 +450,12 @@ const SlidePage: NextPage<SlidePageProps> = ({
   randomSeed,
   sortMode,
 }) => {
+  const router = useRouter();
   const [activeIndex, setActiveIndex] = useState(initialIndex);
-  const [leavingIndex, setLeavingIndex] = useState<number | null>(null);
+  const [renderWindowCenter, setRenderWindowCenter] = useState(initialIndex);
+  const [visualActiveIndex, setVisualActiveIndex] = useState(initialIndex);
+  const [progressVisualIndex, setProgressVisualIndex] = useState(initialIndex);
+  const [isProgressLive, setIsProgressLive] = useState(false);
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
   const [isInfoFlipped, setIsInfoFlipped] = useState(false);
   const [isInfoClosing, setIsInfoClosing] = useState(false);
@@ -471,23 +463,51 @@ const SlidePage: NextPage<SlidePageProps> = ({
   const [landscapePromptDismissed, setLandscapePromptDismissed] =
     useState(false);
   const [isSlideChromeVisible, setIsSlideChromeVisible] = useState(true);
-  const trackRef = useRef<HTMLDivElement | null>(null);
-  const railRef = useRef<HTMLDivElement | null>(null);
-  const cardRefs = useRef<Array<HTMLDivElement | null>>([]);
-  const initialScrollTimer = useRef<number>();
+  const swiperRef = useRef<SwiperInstance | null>(null);
   const openFlipTimer = useRef<number>();
   const closeFlipTimer = useRef<number>();
   const chromeHideTimer = useRef<number>();
-  const scrollFrame = useRef<number>();
-  const scrollAnimationFrame = useRef<number>();
-  const wheelDelta = useRef(0);
-  const wheelFrame = useRef<number>();
+  const commitSlideTimer = useRef<number>();
   const flipLocked = useRef(false);
-  const fullscreenRequestTried = useRef(false);
-  const programmaticIndex = useRef<number | null>(null);
+  const pendingActiveIndex = useRef<number | null>(null);
   const pendingPointer = useRef<PendingPointer | null>(null);
-  const router = useRouter();
+  const progressDragPointerId = useRef<number | null>(null);
+  const progressFrame = useRef<number>();
+  const progressLiveTimer = useRef<number>();
+  const queuedProgressIndex = useRef(initialIndex);
+  const lastWheelSlideAt = useRef(0);
   const activePhoto = photos[activeIndex];
+  const progressDisplayIndex = getSlideProgressDisplayIndex({
+    activeIndex,
+    total: photos.length,
+    visualActiveIndex,
+  });
+  const progressPercent = getSlideProgressPercent({
+    index: progressVisualIndex,
+    total: photos.length,
+  });
+  const slideWindow = useMemo(
+    () =>
+      getSlideRenderWindow({
+        activeIndex: renderWindowCenter,
+        radius: SLIDE_RENDER_WINDOW_RADIUS,
+        total: photos.length,
+      }),
+    [photos.length, renderWindowCenter],
+  );
+  const visibleSlides = useMemo(
+    () =>
+      slideWindow.indexes
+        .map((index) => {
+          const photo = photos[index];
+
+          return photo ? { index, photo } : null;
+        })
+        .filter(
+          (item): item is { index: number; photo: Photo } => item !== null,
+        ),
+    [photos, slideWindow.indexes],
+  );
 
   const scheduleSlideChromeIdle = useCallback(() => {
     window.clearTimeout(chromeHideTimer.current);
@@ -501,25 +521,9 @@ const SlidePage: NextPage<SlidePageProps> = ({
     scheduleSlideChromeIdle();
   }, [scheduleSlideChromeIdle]);
 
-  const requestFullscreenFromSlideGesture = useCallback(() => {
-    if (
-      fullscreenRequestTried.current ||
-      typeof document === 'undefined' ||
-      document.fullscreenElement ||
-      !isSlideMobileViewport() ||
-      isPortraitViewport()
-    ) {
-      return;
-    }
-
-    fullscreenRequestTried.current = true;
-    requestSlideFullscreen().catch(() => undefined);
-  }, []);
-
   const handleSlideInteractionStart = useCallback(() => {
     revealSlideChrome();
-    requestFullscreenFromSlideGesture();
-  }, [requestFullscreenFromSlideGesture, revealSlideChrome]);
+  }, [revealSlideChrome]);
 
   const refreshLandscapePrompt = useCallback(() => {
     setShowLandscapePrompt(
@@ -545,17 +549,25 @@ const SlidePage: NextPage<SlidePageProps> = ({
     const { body, documentElement: root } = document;
     const previousBodyStyles = {
       height: body.style.height,
+      overscrollBehavior: body.style.overscrollBehavior,
       left: body.style.left,
       overflow: body.style.overflow,
       position: body.style.position,
       right: body.style.right,
+      touchAction: body.style.touchAction,
       top: body.style.top,
       width: body.style.width,
     };
     const previousRootStyles = {
       height: root.style.height,
+      left: root.style.left,
       overflow: root.style.overflow,
       overscrollBehavior: root.style.overscrollBehavior,
+      position: root.style.position,
+      right: root.style.right,
+      touchAction: root.style.touchAction,
+      top: root.style.top,
+      width: root.style.width,
     };
     let touchStartX = 0;
     let touchStartY = 0;
@@ -586,28 +598,44 @@ const SlidePage: NextPage<SlidePageProps> = ({
         return;
       }
 
-      const deltaX = touch.clientX - touchStartX;
-      const deltaY = touch.clientY - touchStartY;
+      const targetIsSlideTrack =
+        event.target instanceof Element &&
+        Boolean(event.target.closest('.slide-track'));
 
-      if (Math.abs(deltaY) > Math.abs(deltaX)) {
+      if (
+        shouldPreventSlideDocumentTouchMove({
+          currentTouchX: touch.clientX,
+          currentTouchY: touch.clientY,
+          startTouchX: touchStartX,
+          startTouchY: touchStartY,
+          targetIsSlideTrack,
+        })
+      ) {
         event.preventDefault();
       }
     };
 
     window.scrollTo(0, 0);
     root.style.height = '100%';
+    root.style.left = '0';
     root.style.overflow = 'hidden';
     root.style.overscrollBehavior = 'none';
+    root.style.position = 'fixed';
+    root.style.right = '0';
+    root.style.touchAction = 'none';
+    root.style.top = '0';
+    root.style.width = '100%';
     body.style.left = '0';
+    body.style.overscrollBehavior = 'none';
     body.style.overflow = 'hidden';
     body.style.position = 'fixed';
     body.style.right = '0';
+    body.style.touchAction = 'none';
     body.style.top = '0';
     body.style.width = '100%';
     syncViewportHeight();
 
     window.visualViewport?.addEventListener('resize', syncViewportHeight);
-    window.visualViewport?.addEventListener('scroll', syncViewportHeight);
     window.addEventListener('resize', syncViewportHeight);
     document.addEventListener('touchstart', handleTouchStart, {
       capture: true,
@@ -620,7 +648,6 @@ const SlidePage: NextPage<SlidePageProps> = ({
 
     return () => {
       window.visualViewport?.removeEventListener('resize', syncViewportHeight);
-      window.visualViewport?.removeEventListener('scroll', syncViewportHeight);
       window.removeEventListener('resize', syncViewportHeight);
       document.removeEventListener('touchstart', handleTouchStart, true);
       document.removeEventListener('touchmove', handleTouchMove, true);
@@ -630,91 +657,228 @@ const SlidePage: NextPage<SlidePageProps> = ({
     };
   }, []);
 
-  const animateTrackTo = useCallback(
-    (left: number, duration: number, onComplete?: () => void) => {
-      const track = trackRef.current;
+  const setProgressIndex = useCallback(
+    (index: number, live = false) => {
+      const clampedIndex = clamp(index, 0, Math.max(photos.length - 1, 0));
 
-      if (!track) {
-        onComplete?.();
+      if (live) {
+        setIsProgressLive(true);
+        window.clearTimeout(progressLiveTimer.current);
+        progressLiveTimer.current = window.setTimeout(() => {
+          setIsProgressLive(false);
+        }, SLIDE_SCROLL_DURATION_MS + 120);
+      }
+
+      queuedProgressIndex.current = clampedIndex;
+
+      if (progressFrame.current !== undefined) {
         return;
       }
 
-      window.cancelAnimationFrame(scrollAnimationFrame.current ?? 0);
+      progressFrame.current = window.requestAnimationFrame(() => {
+        progressFrame.current = undefined;
+        setProgressVisualIndex((currentIndex) =>
+          Math.abs(currentIndex - queuedProgressIndex.current) < 0.001
+            ? currentIndex
+            : queuedProgressIndex.current,
+        );
+      });
+    },
+    [photos.length],
+  );
 
-      const startLeft = track.scrollLeft;
-      const delta = left - startLeft;
-      const startedAt = window.performance.now();
+  const syncProgressFromSwiper = useCallback(
+    (swiper: SwiperInstance, live = true) => {
+      setProgressIndex(
+        getSlideProgressVisualIndexFromSlidesGrid({
+          slideStart: slideWindow.start,
+          slidesGrid: swiper.slidesGrid,
+          total: photos.length,
+          translate: swiper.translate,
+        }),
+        live,
+      );
+    },
+    [photos.length, setProgressIndex, slideWindow.start],
+  );
 
-      if (Math.abs(delta) < 0.5 || duration <= 0) {
-        track.scrollLeft = left;
-        onComplete?.();
+  const commitActiveIndex = useCallback(
+    (nextIndex: number) => {
+      const clampedIndex = clamp(nextIndex, 0, Math.max(photos.length - 1, 0));
+
+      pendingActiveIndex.current = null;
+      setVisualActiveIndex(clampedIndex);
+      setProgressIndex(clampedIndex);
+      window.clearTimeout(progressLiveTimer.current);
+      setIsProgressLive(false);
+      setActiveIndex(clampedIndex);
+
+      if (
+        shouldRecenterSlideRenderWindow({
+          activeIndex: clampedIndex,
+          end: slideWindow.end,
+          margin: SLIDE_RENDER_WINDOW_RECENTER_MARGIN,
+          start: slideWindow.start,
+        })
+      ) {
+        setRenderWindowCenter(clampedIndex);
+      }
+    },
+    [photos.length, setProgressIndex, slideWindow.end, slideWindow.start],
+  );
+
+  const slideToIndex = useCallback(
+    (index: number, speed = SLIDE_SCROLL_DURATION_MS) => {
+      const nextIndex = clamp(index, 0, Math.max(photos.length - 1, 0));
+      const swiper = swiperRef.current;
+      const localIndex = nextIndex - slideWindow.start;
+
+      window.clearTimeout(commitSlideTimer.current);
+
+      if (
+        !swiper ||
+        swiper.destroyed ||
+        localIndex < 0 ||
+        localIndex >= visibleSlides.length
+      ) {
+        setRenderWindowCenter(nextIndex);
+        commitActiveIndex(nextIndex);
         return;
       }
 
-      const step = (now: number) => {
-        const progress = clamp((now - startedAt) / duration, 0, 1);
-        track.scrollLeft = startLeft + delta * easeOutQuint(progress);
+      pendingActiveIndex.current = nextIndex;
+      setVisualActiveIndex(nextIndex);
+      setProgressIndex(nextIndex, speed === 0);
+      swiper.slideTo(localIndex, speed);
+    },
+    [
+      commitActiveIndex,
+      photos.length,
+      setProgressIndex,
+      slideWindow.start,
+      visibleSlides.length,
+    ],
+  );
 
-        if (progress < 1) {
-          scrollAnimationFrame.current = window.requestAnimationFrame(step);
-          return;
-        }
+  const jumpToProgressPosition = useCallback(
+    (track: HTMLDivElement, clientX: number) => {
+      const rect = track.getBoundingClientRect();
+      const nextIndex = getSlideProgressIndex({
+        clientX,
+        left: rect.left,
+        total: photos.length,
+        width: rect.width,
+      });
 
-        track.scrollLeft = left;
-        scrollAnimationFrame.current = undefined;
-        onComplete?.();
-      };
+      setProgressIndex(nextIndex, true);
+      slideToIndex(nextIndex, 0);
+      window.clearTimeout(commitSlideTimer.current);
+      commitActiveIndex(nextIndex);
+      revealSlideChrome();
+    },
+    [
+      commitActiveIndex,
+      photos.length,
+      revealSlideChrome,
+      setProgressIndex,
+      slideToIndex,
+    ],
+  );
 
-      scrollAnimationFrame.current = window.requestAnimationFrame(step);
+  const handleProgressPointerDown = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      event.preventDefault();
+      event.stopPropagation();
+      progressDragPointerId.current = event.pointerId;
+      event.currentTarget.setPointerCapture(event.pointerId);
+      jumpToProgressPosition(event.currentTarget, event.clientX);
+    },
+    [jumpToProgressPosition],
+  );
+
+  const handleProgressPointerMove = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      if (progressDragPointerId.current !== event.pointerId) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      jumpToProgressPosition(event.currentTarget, event.clientX);
+    },
+    [jumpToProgressPosition],
+  );
+
+  const handleProgressPointerEnd = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      if (progressDragPointerId.current !== event.pointerId) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      progressDragPointerId.current = null;
+      jumpToProgressPosition(event.currentTarget, event.clientX);
+
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+    },
+    [jumpToProgressPosition],
+  );
+
+  const handleProgressPointerCancel = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      if (progressDragPointerId.current !== event.pointerId) {
+        return;
+      }
+
+      progressDragPointerId.current = null;
+
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
     },
     [],
   );
 
-  const scrollToCard = useCallback(
-    (index: number, behavior: ScrollBehavior, onComplete?: () => void) => {
-      const track = trackRef.current;
-      const card = cardRefs.current[index];
+  const handleProgressKeyDown = useCallback(
+    (event: ReactKeyboardEvent<HTMLDivElement>) => {
+      const step = event.shiftKey ? 10 : 1;
+      let nextIndex: number | null = null;
 
-      if (!track || !card) {
-        onComplete?.();
+      if (event.key === 'ArrowLeft' || event.key === 'ArrowDown') {
+        nextIndex = activeIndex - step;
+      } else if (event.key === 'ArrowRight' || event.key === 'ArrowUp') {
+        nextIndex = activeIndex + step;
+      } else if (event.key === 'Home') {
+        nextIndex = 0;
+      } else if (event.key === 'End') {
+        nextIndex = photos.length - 1;
+      }
+
+      if (nextIndex === null) {
         return;
       }
 
-      const cardCenter = card.offsetLeft + card.offsetWidth / 2;
-      const targetLeft = cardCenter - track.clientWidth / 2;
-      const maxScrollLeft = Math.max(0, track.scrollWidth - track.clientWidth);
-      const clampedTarget = clamp(targetLeft, 0, maxScrollLeft);
+      event.preventDefault();
+      event.stopPropagation();
 
-      if (behavior === 'smooth') {
-        programmaticIndex.current = index;
-        animateTrackTo(clampedTarget, SLIDE_SCROLL_DURATION_MS, () => {
-          programmaticIndex.current = null;
-          onComplete?.();
-        });
-        return;
-      }
+      const clampedIndex = clamp(nextIndex, 0, Math.max(photos.length - 1, 0));
 
-      programmaticIndex.current = null;
-      window.cancelAnimationFrame(scrollAnimationFrame.current ?? 0);
-      track.scrollLeft = clampedTarget;
-      onComplete?.();
+      slideToIndex(clampedIndex, 0);
+      window.clearTimeout(commitSlideTimer.current);
+      commitActiveIndex(clampedIndex);
+      revealSlideChrome();
     },
-    [animateTrackTo],
+    [
+      activeIndex,
+      commitActiveIndex,
+      photos.length,
+      revealSlideChrome,
+      slideToIndex,
+    ],
   );
-
-  const isCardNearCenter = useCallback((index: number) => {
-    const track = trackRef.current;
-    const card = cardRefs.current[index];
-
-    if (!track || !card) {
-      return true;
-    }
-
-    const viewportCenter = track.scrollLeft + track.clientWidth / 2;
-    const cardCenter = card.offsetLeft + card.offsetWidth / 2;
-
-    return Math.abs(cardCenter - viewportCenter) < track.clientWidth * 0.08;
-  }, []);
 
   const openPhotoInfo = useCallback(
     (index: number) => {
@@ -728,27 +892,23 @@ const SlidePage: NextPage<SlidePageProps> = ({
       setIsInfoFlipped(false);
       setIsInfoClosing(false);
       setSelectedIndex(null);
+      setVisualActiveIndex(index);
       setActiveIndex(index);
+      slideToIndex(index);
 
-      const nearCenter = isCardNearCenter(index);
-      scrollToCard(index, nearCenter ? 'auto' : 'smooth');
-
-      openFlipTimer.current = window.setTimeout(
-        () => {
-          setSelectedIndex(index);
+      openFlipTimer.current = window.setTimeout(() => {
+        setSelectedIndex(index);
+        window.requestAnimationFrame(() => {
           window.requestAnimationFrame(() => {
-            window.requestAnimationFrame(() => {
-              setIsInfoFlipped(true);
-              window.setTimeout(() => {
-                flipLocked.current = false;
-              }, FLIP_DURATION_MS);
-            });
+            setIsInfoFlipped(true);
+            window.setTimeout(() => {
+              flipLocked.current = false;
+            }, FLIP_DURATION_MS);
           });
-        },
-        nearCenter ? 40 : OPEN_FLIP_DELAY_MS,
-      );
+        });
+      }, OPEN_FLIP_DELAY_MS);
     },
-    [isCardNearCenter, scrollToCard],
+    [slideToIndex],
   );
 
   const closePhotoInfo = useCallback(() => {
@@ -769,107 +929,10 @@ const SlidePage: NextPage<SlidePageProps> = ({
     }, FLIP_CLOSE_DURATION_MS);
   }, [selectedIndex]);
 
-  const updateActiveFromScroll = useCallback(() => {
-    const track = trackRef.current;
-
-    if (!track || photos.length === 0 || programmaticIndex.current !== null) {
-      return;
-    }
-
-    const viewportCenter = track.scrollLeft + track.clientWidth / 2;
-    const metrics = cardRefs.current
-      .map<CardMetrics | null>((card, index) => {
-        if (!card) {
-          return null;
-        }
-
-        return {
-          center: card.offsetLeft + card.offsetWidth / 2,
-          index,
-        };
-      })
-      .filter((item): item is CardMetrics => item !== null);
-
-    const closest = metrics.reduce<CardMetrics | null>((current, item) => {
-      if (!current) {
-        return item;
-      }
-
-      return Math.abs(item.center - viewportCenter) <
-        Math.abs(current.center - viewportCenter)
-        ? item
-        : current;
-    }, null);
-
-    if (closest) {
-      setLeavingIndex(null);
-      setActiveIndex((currentIndex) =>
-        closest.index === currentIndex ? currentIndex : closest.index,
-      );
-    }
-  }, [photos.length]);
-
-  const scheduleActiveUpdate = useCallback(() => {
-    if (scrollFrame.current) {
-      return;
-    }
-
-    scrollFrame.current = window.requestAnimationFrame(() => {
-      scrollFrame.current = undefined;
-      updateActiveFromScroll();
-    });
-  }, [updateActiveFromScroll]);
-
-  const flushWheelScroll = useCallback(() => {
-    const track = trackRef.current;
-
-    if (!track) {
-      wheelDelta.current = 0;
-      wheelFrame.current = undefined;
-      return;
-    }
-
-    const nextScrollLeft = clamp(
-      track.scrollLeft + wheelDelta.current,
-      0,
-      track.scrollWidth - track.clientWidth,
-    );
-
-    programmaticIndex.current = null;
-    setLeavingIndex(null);
-    animateTrackTo(nextScrollLeft, WHEEL_SCROLL_DURATION_MS);
-    wheelDelta.current = 0;
-    wheelFrame.current = undefined;
-    scheduleActiveUpdate();
-  }, [animateTrackTo, scheduleActiveUpdate]);
-
-  const queueHorizontalScroll = useCallback(
-    (delta: number, deltaMode: number) => {
-      const track = trackRef.current;
-
-      if (!track || delta === 0) {
-        return;
-      }
-
-      const normalizedDelta = deltaMode === 1 ? delta * 18 : delta;
-      wheelDelta.current = clamp(
-        wheelDelta.current + normalizedDelta,
-        -track.clientWidth * 0.72,
-        track.clientWidth * 0.72,
-      );
-
-      if (!wheelFrame.current) {
-        wheelFrame.current = window.requestAnimationFrame(flushWheelScroll);
-      }
-    },
-    [flushWheelScroll],
-  );
-
   const handleCardPointerDown = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>, index: number) => {
       pendingPointer.current = {
         index,
-        scrollLeft: trackRef.current?.scrollLeft ?? 0,
         x: event.clientX,
         y: event.clientY,
       };
@@ -891,15 +954,8 @@ const SlidePage: NextPage<SlidePageProps> = ({
         event.clientX - pointer.x,
         event.clientY - pointer.y,
       );
-      const scrollMovement = Math.abs(
-        (trackRef.current?.scrollLeft ?? pointer.scrollLeft) -
-          pointer.scrollLeft,
-      );
 
-      if (
-        movement > CLICK_MOVEMENT_LIMIT_PX ||
-        scrollMovement > CLICK_MOVEMENT_LIMIT_PX
-      ) {
+      if (movement > CLICK_MOVEMENT_LIMIT_PX) {
         return;
       }
 
@@ -920,65 +976,105 @@ const SlidePage: NextPage<SlidePageProps> = ({
         return;
       }
 
-      setLeavingIndex(activeIndex);
-      setActiveIndex(nextIndex);
-      scrollToCard(nextIndex, 'smooth', () => {
-        setLeavingIndex(null);
-      });
+      slideToIndex(nextIndex);
     },
-    [activeIndex, photos.length, scrollToCard],
+    [activeIndex, photos.length, slideToIndex],
   );
 
-  useEffect(() => {
-    window.clearTimeout(initialScrollTimer.current);
-    window.clearTimeout(openFlipTimer.current);
-    window.clearTimeout(closeFlipTimer.current);
-    flipLocked.current = false;
-    setLeavingIndex(null);
-    setSelectedIndex(null);
-    setIsInfoFlipped(false);
-    setIsInfoClosing(false);
-    setActiveIndex(initialIndex);
-    initialScrollTimer.current = window.setTimeout(() => {
-      scrollToCard(initialIndex, 'auto');
-    }, SCROLL_TO_CENTER_DELAY_MS);
-  }, [initialIndex, scrollToCard]);
+  const handleSlideWheel = useCallback(
+    (event: ReactWheelEvent<HTMLElement>) => {
+      if (selectedIndex !== null) {
+        return;
+      }
 
-  useEffect(() => {
-    const track = trackRef.current;
+      const wheelOffset = getSlideWheelOffset({
+        deltaMode: event.deltaMode,
+        deltaX: event.deltaX,
+        deltaY: event.deltaY,
+      });
 
-    if (!track) {
-      return undefined;
-    }
+      if (wheelOffset === 0) {
+        return;
+      }
 
-    const handleWheel = (event: WheelEvent) => {
-      const delta =
-        Math.abs(event.deltaX) > Math.abs(event.deltaY)
-          ? event.deltaX
-          : event.deltaY;
-
-      if (delta === 0) {
+      if (
+        typeof window !== 'undefined' &&
+        window.matchMedia('(max-width: 900px) and (pointer: coarse)').matches
+      ) {
         return;
       }
 
       event.preventDefault();
-      revealSlideChrome();
-      queueHorizontalScroll(delta, event.deltaMode);
-    };
+      event.stopPropagation();
 
-    track.addEventListener('wheel', handleWheel, {
-      passive: false,
-    });
-    track.addEventListener('scroll', scheduleActiveUpdate, {
-      passive: true,
-    });
+      const now = window.performance.now();
+
+      if (now - lastWheelSlideAt.current < SLIDE_WHEEL_COOLDOWN_MS) {
+        return;
+      }
+
+      lastWheelSlideAt.current = now;
+      revealSlideChrome();
+      goToSlide(wheelOffset);
+    },
+    [goToSlide, revealSlideChrome, selectedIndex],
+  );
+
+  useEffect(() => {
+    window.clearTimeout(openFlipTimer.current);
+    window.clearTimeout(closeFlipTimer.current);
+    window.clearTimeout(commitSlideTimer.current);
+    if (progressFrame.current !== undefined) {
+      window.cancelAnimationFrame(progressFrame.current);
+      progressFrame.current = undefined;
+    }
+    window.clearTimeout(progressLiveTimer.current);
+    flipLocked.current = false;
+    setSelectedIndex(null);
+    setIsInfoFlipped(false);
+    setIsInfoClosing(false);
+    setRenderWindowCenter(initialIndex);
+    setVisualActiveIndex(initialIndex);
+    queuedProgressIndex.current = initialIndex;
+    setProgressVisualIndex(initialIndex);
+    setIsProgressLive(false);
+    setActiveIndex(initialIndex);
+    pendingActiveIndex.current = null;
 
     return () => {
-      window.cancelAnimationFrame(wheelFrame.current ?? 0);
-      track.removeEventListener('wheel', handleWheel);
-      track.removeEventListener('scroll', scheduleActiveUpdate);
+      window.clearTimeout(progressLiveTimer.current);
+      if (progressFrame.current !== undefined) {
+        window.cancelAnimationFrame(progressFrame.current);
+        progressFrame.current = undefined;
+      }
     };
-  }, [queueHorizontalScroll, revealSlideChrome, scheduleActiveUpdate]);
+  }, [initialIndex]);
+
+  useIsomorphicLayoutEffect(() => {
+    const swiper = swiperRef.current;
+    const localIndex = getSlideRenderWindowLocalIndex({
+      end: slideWindow.end,
+      index: visualActiveIndex,
+      start: slideWindow.start,
+    });
+
+    if (
+      !swiper ||
+      swiper.destroyed ||
+      localIndex === null ||
+      swiper.activeIndex === localIndex
+    ) {
+      return;
+    }
+
+    swiper.slideTo(localIndex, 0, false);
+    syncProgressFromSwiper(swiper, false);
+  }, [
+    slideWindow.end,
+    slideWindow.start,
+    syncProgressFromSwiper,
+    visualActiveIndex,
+  ]);
 
   useEffect(() => {
     revealSlideChrome();
@@ -1032,13 +1128,10 @@ const SlidePage: NextPage<SlidePageProps> = ({
 
   useEffect(
     () => () => {
-      window.clearTimeout(initialScrollTimer.current);
       window.clearTimeout(openFlipTimer.current);
       window.clearTimeout(closeFlipTimer.current);
       window.clearTimeout(chromeHideTimer.current);
-      window.cancelAnimationFrame(scrollFrame.current ?? 0);
-      window.cancelAnimationFrame(wheelFrame.current ?? 0);
-      window.cancelAnimationFrame(scrollAnimationFrame.current ?? 0);
+      window.clearTimeout(commitSlideTimer.current);
     },
     [],
   );
@@ -1049,51 +1142,56 @@ const SlidePage: NextPage<SlidePageProps> = ({
   const selectedPhoto =
     selectedIndex !== null ? photos[selectedIndex] : undefined;
 
-  const proofHref = useMemo(() => {
-    const params = new URLSearchParams();
-
-    if (sortMode) {
-      params.set('sort', sortMode);
-    }
-
-    if (category) {
-      params.set('category', category);
-    }
-
-    if (sortMode === 'random') {
-      params.set('seed', String(randomSeed));
-    }
-
-    const query = params.toString();
-
-    return query ? `/?${query}` : '/';
-  }, [category, randomSeed, sortMode]);
+  const proofHref = useMemo(
+    () => buildSlideProofHref({ category, randomSeed, sortMode }),
+    [category, randomSeed, sortMode],
+  );
 
   const currentSlideHref = useMemo(() => {
-    const fallbackSlideHref = proofHref.replace(/^\//, '/slide');
-    const slideHref = router.asPath.startsWith('/slide')
-      ? router.asPath
-      : fallbackSlideHref;
-
-    if (!activePhoto) {
-      return slideHref;
-    }
-
-    const [pathname, rawQuery = ''] = slideHref.split('?');
-    const [queryString, hash = ''] = rawQuery.split('#');
-    const params = new URLSearchParams(queryString);
-
-    params.set('id', activePhoto.id);
-
-    const query = params.toString();
-    const hashSuffix = hash ? `#${hash}` : '';
-
-    return `${pathname}${query ? `?${query}` : ''}${hashSuffix}`;
-  }, [activePhoto, proofHref, router.asPath]);
+    return buildSlideCurrentHref({
+      activePhotoId: activePhoto?.id,
+      proofHref,
+    });
+  }, [activePhoto, proofHref]);
 
   const activePhotoDetailHref = activePhoto
     ? buildPhotoDetailHref(activePhoto.id, currentSlideHref)
     : '/';
+
+  const preserveProofGallerySnapshot = useCallback(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    const existingSnapshot = window.sessionStorage.getItem(
+      GALLERY_SCROLL_STORAGE_KEY,
+    );
+
+    if (readGalleryScrollSnapshot(existingSnapshot, proofHref) !== null) {
+      return;
+    }
+
+    window.sessionStorage.setItem(
+      GALLERY_SCROLL_STORAGE_KEY,
+      createGalleryScrollSnapshot(proofHref, 0, Date.now(), window.innerWidth),
+    );
+  }, [proofHref]);
+
+  const handleProofViewNavigation = useCallback(
+    (event: ReactMouseEvent<HTMLAnchorElement>) => {
+      if (!guardSlideProofNavigationEvent(event)) {
+        return;
+      }
+
+      preserveProofGallerySnapshot();
+      router.replace(proofHref, undefined, { scroll: false }).catch((error) => {
+        if (shouldHardNavigateAfterClientRouteFailure(error)) {
+          window.location.href = proofHref;
+        }
+      });
+    },
+    [preserveProofGallerySnapshot, proofHref, router],
+  );
 
   if (loadError) {
     return <StatusPanel title="Photos are not available" message={loadError} />;
@@ -1113,8 +1211,16 @@ const SlidePage: NextPage<SlidePageProps> = ({
       className={`slide-view fixed inset-0 h-[100svh] w-screen overflow-hidden bg-[#050403] text-stone-100 antialiased ${
         isSlideChromeVisible ? 'slide-chrome-visible' : 'slide-chrome-resting'
       }`}
+      data-progress-live={isProgressLive ? 'true' : 'false'}
+      style={
+        {
+          '--slide-card-motion-duration': `${SLIDE_CARD_TRANSFORM_DURATION_MS}ms`,
+          '--slide-motion-duration': `${SLIDE_SCROLL_DURATION_MS}ms`,
+        } as CSSProperties
+      }
       onPointerDown={handleSlideInteractionStart}
       onTouchStart={handleSlideInteractionStart}
+      onWheel={handleSlideWheel}
     >
       <Meta
         title={`${visibleTitle} | Slide View | ${AppConfig.site_name}`}
@@ -1143,6 +1249,8 @@ const SlidePage: NextPage<SlidePageProps> = ({
             <div className="slide-mode-switcher bg-black/42 pointer-events-auto inline-flex rounded-full p-1 text-sm font-medium text-stone-400 ring-1 ring-white/10 backdrop-blur">
               <Link
                 href={proofHref}
+                onClick={handleProofViewNavigation}
+                onPointerDown={(event) => event.stopPropagation()}
                 className="rounded-full px-4 py-2 transition hover:bg-white/10 hover:text-white"
               >
                 Proof View
@@ -1167,58 +1275,133 @@ const SlidePage: NextPage<SlidePageProps> = ({
               </Link>
             </div>
           </div>
-          <div className="slide-progress-track slide-progress-track-inline hidden h-1 min-w-0 flex-1 overflow-hidden rounded-full bg-white/10">
+          <div
+            role="slider"
+            tabIndex={0}
+            aria-label="Slide progress"
+            aria-valuemax={photos.length}
+            aria-valuemin={1}
+            aria-valuenow={progressDisplayIndex + 1}
+            aria-valuetext={`${progressDisplayIndex + 1} / ${photos.length}`}
+            className="slide-progress-track slide-progress-track-inline hidden h-1 min-w-0 flex-1 overflow-hidden rounded-full bg-white/10"
+            onKeyDown={handleProgressKeyDown}
+            onPointerCancel={handleProgressPointerCancel}
+            onPointerDown={handleProgressPointerDown}
+            onPointerMove={handleProgressPointerMove}
+            onPointerUp={handleProgressPointerEnd}
+          >
             <span
               className="slide-progress block h-full rounded-full bg-[#9db6b0]"
               style={{
-                width: `${((activeIndex + 1) / photos.length) * 100}%`,
+                width: `${progressPercent}%`,
               }}
             />
           </div>
           <div className="slide-count-pill rounded-full px-4 py-2 text-sm font-medium tabular-nums text-stone-400 max-[900px]:landscape:text-xs">
-            {activeIndex + 1} / {photos.length}
+            {progressDisplayIndex + 1} / {photos.length}
           </div>
         </div>
-        <div className="slide-progress-track slide-progress-track-stack mx-auto mt-3 h-1 max-w-[1440px] overflow-hidden rounded-full bg-white/10 max-[900px]:landscape:mt-0.5 max-[900px]:landscape:h-0.5 max-[900px]:landscape:w-[46vw] max-[900px]:landscape:max-w-[360px] max-[900px]:landscape:bg-white/10 max-[900px]:landscape:opacity-60">
+        <div
+          role="slider"
+          tabIndex={0}
+          aria-label="Slide progress"
+          aria-valuemax={photos.length}
+          aria-valuemin={1}
+          aria-valuenow={progressDisplayIndex + 1}
+          aria-valuetext={`${progressDisplayIndex + 1} / ${photos.length}`}
+          className="slide-progress-track slide-progress-track-stack mx-auto mt-3 h-1 max-w-[1440px] overflow-hidden rounded-full bg-white/10 max-[900px]:landscape:mt-0.5 max-[900px]:landscape:h-0.5 max-[900px]:landscape:w-[46vw] max-[900px]:landscape:max-w-[360px] max-[900px]:landscape:bg-white/10 max-[900px]:landscape:opacity-60"
+          onKeyDown={handleProgressKeyDown}
+          onPointerCancel={handleProgressPointerCancel}
+          onPointerDown={handleProgressPointerDown}
+          onPointerMove={handleProgressPointerMove}
+          onPointerUp={handleProgressPointerEnd}
+        >
           <span
             className="slide-progress block h-full rounded-full bg-[#9db6b0]"
             style={{
-              width: `${((activeIndex + 1) / photos.length) * 100}%`,
+              width: `${progressPercent}%`,
             }}
           />
         </div>
       </header>
 
       <section className="slide-stage relative z-10 flex items-center">
-        <div
-          ref={trackRef}
-          className="slide-track w-full overflow-x-auto overflow-y-hidden px-0"
-        >
-          <div
-            ref={railRef}
-            className="slide-rail flex h-full items-center py-0"
-          >
-            <span aria-hidden="true" className="slide-edge-spacer" />
-            {photos.map((photo, index) => {
-              const distance = index - activeIndex;
-              const isActive = index === activeIndex;
-              const isLeaving = index === leavingIndex;
-              const isStaged = isActive || isLeaving;
-              const imageSource = photo.thumbnail;
-              let cardState = 'idle';
+        <Swiper
+          className="slide-track slide-swiper size-full"
+          centeredSlides
+          initialSlide={slideWindow.localActiveIndex}
+          resistanceRatio={SLIDE_RESISTANCE_RATIO}
+          slideToClickedSlide
+          slidesPerView="auto"
+          spaceBetween={10}
+          speed={SLIDE_SCROLL_DURATION_MS}
+          threshold={SLIDE_TOUCH_THRESHOLD_PX}
+          watchSlidesProgress
+          onSetTranslate={(swiper) => {
+            syncProgressFromSwiper(swiper);
+          }}
+          onSlideChange={(swiper) => {
+            const nextVisibleSlide = visibleSlides[swiper.activeIndex];
 
-              if (isActive) {
-                cardState = 'active';
-              } else if (isLeaving) {
-                cardState = 'leaving';
+            if (nextVisibleSlide) {
+              pendingActiveIndex.current = nextVisibleSlide.index;
+              setVisualActiveIndex(nextVisibleSlide.index);
+              setProgressIndex(nextVisibleSlide.index, true);
+            }
+
+            window.clearTimeout(commitSlideTimer.current);
+            commitSlideTimer.current = window.setTimeout(() => {
+              const nextIndex = pendingActiveIndex.current;
+
+              if (nextIndex !== null) {
+                commitActiveIndex(nextIndex);
               }
+            }, SLIDE_SCROLL_DURATION_MS + 80);
+          }}
+          onSliderMove={(swiper) => {
+            revealSlideChrome();
+            syncProgressFromSwiper(swiper);
+          }}
+          onSwiper={(swiper) => {
+            swiperRef.current = swiper;
+            syncProgressFromSwiper(swiper, false);
+          }}
+          onTouchStart={revealSlideChrome}
+          onTransitionEnd={() => {
+            window.clearTimeout(commitSlideTimer.current);
+            const nextIndex = pendingActiveIndex.current;
 
-              return (
+            if (nextIndex !== null) {
+              commitActiveIndex(nextIndex);
+            } else {
+              setIsProgressLive(false);
+            }
+          }}
+        >
+          {visibleSlides.map(({ photo, index }) => {
+            const distance = index - visualActiveIndex;
+            const isActive = index === visualActiveIndex;
+            const isStaged = isActive;
+            const imageSource = photo.thumbnail || photo.src;
+            const shouldMountImage = shouldRenderSlideImage(distance);
+            let cardState = 'idle';
+
+            if (isActive) {
+              cardState = 'active';
+            }
+
+            return (
+              <SwiperSlide
+                key={photo.id}
+                className={`slide-card-slide !flex items-center justify-center ${
+                  isActive ? 'slide-card-slide-active' : ''
+                }`}
+                style={{
+                  ...getSlideCardAspectStyle(photo),
+                  height: 'var(--slide-card-height)',
+                }}
+              >
                 <div
-                  key={photo.id}
-                  ref={(element) => {
-                    cardRefs.current[index] = element;
-                  }}
                   role="button"
                   tabIndex={0}
                   aria-label={`${getPhotoTitle(photo)} photo card`}
@@ -1233,32 +1416,33 @@ const SlidePage: NextPage<SlidePageProps> = ({
                       openPhotoInfo(index);
                     }
                   }}
-                  className={`slide-card group relative flex shrink-0 cursor-pointer items-center justify-center outline-none first:ml-0 hover:z-30 focus-visible:ring-2 focus-visible:ring-white/35 ${
+                  className={`slide-card group relative flex size-full cursor-pointer items-center justify-center outline-none hover:z-30 focus-visible:ring-2 focus-visible:ring-white/35 ${
                     isActive ? 'slide-card-active' : ''
-                  } ${isLeaving ? 'slide-card-leaving' : ''}`}
+                  }`}
                   data-card-state={cardState}
-                  style={{
-                    ...getCardStyle({
-                      active: isStaged,
-                      index,
-                      photo,
-                    }),
-                    height: 'var(--slide-card-height)',
-                    marginLeft:
-                      index === 0 ? undefined : 'var(--slide-card-overlap)',
-                    ...getSlideCardAspectStyle(photo),
-                  }}
+                  style={getCardStyle({
+                    active: isStaged,
+                    index,
+                    photo,
+                  })}
                 >
                   <div className="slide-card-inner relative size-full rounded-[22px]">
                     <div className="slide-photo-face absolute inset-0 z-10 overflow-hidden rounded-[22px] bg-[#18130f] shadow-[0_24px_70px_rgba(0,0,0,0.58)] ring-1 ring-white/10 [backface-visibility:hidden]">
-                      <img
-                        src={imageSource}
-                        alt={getPhotoTitle(photo)}
-                        loading={Math.abs(distance) <= 6 ? 'eager' : 'lazy'}
-                        decoding="async"
-                        draggable={false}
-                        className="size-full select-none object-cover"
-                      />
+                      {shouldMountImage ? (
+                        <img
+                          src={imageSource}
+                          alt={getPhotoTitle(photo)}
+                          loading={getSlideImageLoading(distance)}
+                          decoding="async"
+                          draggable={false}
+                          className="size-full select-none object-cover"
+                        />
+                      ) : (
+                        <span
+                          aria-hidden="true"
+                          className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(157,182,176,0.14)_0%,rgba(255,255,255,0.045)_38%,rgba(0,0,0,0.22)_100%)]"
+                        />
+                      )}
                       <span className="from-black/32 to-white/4 pointer-events-none absolute inset-0 rounded-[22px] bg-gradient-to-t via-transparent opacity-70" />
                       {isActive ? (
                         <span className="pointer-events-none absolute inset-0 rounded-[22px] shadow-[0_0_42px_rgba(157,182,176,0.18)] ring-1 ring-[#c6ded7]/35" />
@@ -1266,11 +1450,10 @@ const SlidePage: NextPage<SlidePageProps> = ({
                     </div>
                   </div>
                 </div>
-              );
-            })}
-            <span aria-hidden="true" className="slide-edge-spacer" />
-          </div>
-        </div>
+              </SwiperSlide>
+            );
+          })}
+        </Swiper>
       </section>
 
       <aside className="via-[#050403]/58 pointer-events-none fixed inset-x-0 bottom-0 z-[110] bg-gradient-to-t from-[#050403] to-transparent px-4 pb-5 pt-24 sm:px-8 sm:pb-8 max-[900px]:landscape:pb-3 max-[900px]:landscape:pt-16">
@@ -1335,21 +1518,18 @@ const SlidePage: NextPage<SlidePageProps> = ({
       ) : null}
 
       {showLandscapePrompt ? (
-        <div className="bg-[#050403]/92 fixed inset-0 z-[260] grid place-items-center px-6 text-center text-stone-100 backdrop-blur">
-          <div className="max-w-[280px]">
-            <p className="text-xs font-semibold uppercase tracking-[0.22em] text-[#9db6b0]">
-              Slide View
+        <div className="bg-[#050403]/88 fixed inset-0 z-[260] grid place-items-center px-6 text-center text-stone-100 backdrop-blur-xl">
+          <div className="max-w-[330px]">
+            <p className="mx-auto max-w-[260px] text-base font-semibold leading-6 text-stone-100">
+              推荐横屏观看
             </p>
-            <h2 className="mt-3 text-2xl font-semibold leading-tight">
-              横屏观看
-            </h2>
-            <div className="mt-6 flex items-center justify-center gap-2">
+            <div className="mt-5 inline-flex rounded-full bg-white/[0.055] p-1 text-sm font-medium ring-1 ring-white/[0.07] backdrop-blur-xl">
               <button
                 type="button"
                 onClick={requestLandscapeMode}
-                className="rounded-full bg-[#9db6b0] px-5 py-2.5 text-sm font-semibold text-[#17110e] transition hover:bg-[#b7cec8]"
+                className="rounded-full px-5 py-2 text-stone-300 transition hover:bg-white/[0.06] hover:text-stone-100"
               >
-                横屏显示
+                旋转屏幕
               </button>
               <button
                 type="button"
@@ -1357,9 +1537,9 @@ const SlidePage: NextPage<SlidePageProps> = ({
                   setLandscapePromptDismissed(true);
                   setShowLandscapePrompt(false);
                 }}
-                className="rounded-full bg-white/10 px-5 py-2.5 text-sm font-semibold text-stone-200 ring-1 ring-white/10 transition hover:bg-white/15"
+                className="rounded-full bg-[#9db6b0] px-5 py-2 text-[#17110e] transition hover:bg-[#b7cec8]"
               >
-                继续
+                继续竖屏
               </button>
             </div>
           </div>
@@ -1368,6 +1548,7 @@ const SlidePage: NextPage<SlidePageProps> = ({
 
       <style jsx global>{`
         .slide-view {
+          --slide-card-height-active: clamp(295px, 67vh, 610px);
           --slide-card-height: clamp(250px, 57vh, 520px);
           --slide-card-overlap: 10px;
           --slide-edge-inset: clamp(10px, 1.6vmin, 18px);
@@ -1421,7 +1602,9 @@ const SlidePage: NextPage<SlidePageProps> = ({
         }
 
         .slide-track {
+          -webkit-overflow-scrolling: touch;
           height: var(--slide-viewport-height, 100svh) !important;
+          overflow: visible !important;
           overscroll-behavior-x: contain;
           overscroll-behavior-y: none;
           scrollbar-width: none;
@@ -1432,21 +1615,46 @@ const SlidePage: NextPage<SlidePageProps> = ({
           display: none;
         }
 
-        .slide-rail {
-          min-width: max-content;
-          width: max-content;
-        }
-
-        .slide-edge-spacer {
-          flex: 0 0 50vw;
-          min-width: 50vw;
-          width: 50vw;
+        .slide-track .swiper-wrapper {
+          align-items: center;
+          overflow: visible !important;
         }
 
         .slide-progress {
+          background: #9db6b0 !important;
+          pointer-events: none;
           transform-origin: left center;
-          transition: width 680ms cubic-bezier(0.16, 1, 0.3, 1);
+          transition: width var(--slide-motion-duration)
+            cubic-bezier(0.16, 1, 0.3, 1);
           will-change: width;
+        }
+
+        .slide-view[data-progress-live='true'] .slide-progress {
+          transition-duration: 1ms;
+          transition-timing-function: linear;
+        }
+
+        .slide-progress-track {
+          cursor: pointer;
+          outline: none;
+          overflow: visible !important;
+          pointer-events: auto;
+          position: relative;
+          touch-action: none;
+          user-select: none;
+        }
+
+        .slide-progress-track::after {
+          content: '';
+          inset: -12px 0;
+          pointer-events: none;
+          position: absolute;
+        }
+
+        .slide-progress-track:focus-visible {
+          box-shadow:
+            0 0 0 1px rgba(198, 222, 215, 0.36),
+            0 0 28px rgba(157, 182, 176, 0.22);
         }
 
         .slide-caption {
@@ -1458,6 +1666,13 @@ const SlidePage: NextPage<SlidePageProps> = ({
             0 18px 48px rgba(0, 0, 0, 0.32),
             inset 0 1px 0 rgba(255, 255, 255, 0.08);
           flex-shrink: 0;
+          position: relative;
+          z-index: 2;
+        }
+
+        .slide-mode-switcher {
+          position: relative;
+          z-index: 2;
         }
 
         .slide-controls > button[aria-label] {
@@ -1482,27 +1697,36 @@ const SlidePage: NextPage<SlidePageProps> = ({
         }
 
         .slide-card {
+          height: 100% !important;
           transform-origin: center center;
           transform: translate3d(0, var(--card-y), 0)
             rotateZ(var(--card-rotate)) scale(1);
           transition:
-            transform 680ms cubic-bezier(0.16, 1, 0.3, 1),
-            opacity 520ms cubic-bezier(0.16, 1, 0.3, 1);
+            transform var(--slide-card-motion-duration)
+              cubic-bezier(0.16, 1, 0.3, 1),
+            opacity var(--slide-card-motion-duration)
+              cubic-bezier(0.16, 1, 0.3, 1);
+          width: 100% !important;
           will-change: transform, opacity;
         }
 
-        .slide-card:hover {
-          transform: translate3d(0, var(--card-hover-y), 0)
-            rotateZ(var(--card-hover-rotate)) scale(1.15) !important;
-          opacity: 1 !important;
-          z-index: 30 !important;
+        .slide-card-slide {
+          height: var(--slide-card-height) !important;
+          overflow: visible !important;
+          width: var(--slide-card-width-default) !important;
+        }
+
+        .slide-card-slide-active {
+          height: var(--slide-card-height-active) !important;
+          z-index: 48 !important;
+          width: var(--slide-card-width-active-default) !important;
         }
 
         .slide-card-active {
           transform: translate3d(0, var(--card-active-y), 0)
-            rotateZ(var(--card-active-rotate)) scale(1.1) !important;
+            rotateZ(var(--card-active-rotate)) scale(${SLIDE_ACTIVE_SCALE}) !important;
           opacity: 1 !important;
-          z-index: 20 !important;
+          z-index: 64 !important;
         }
 
         .slide-card-active .slide-card-inner {
@@ -1511,23 +1735,18 @@ const SlidePage: NextPage<SlidePageProps> = ({
             0 0 0 1px rgba(198, 222, 215, 0.24);
         }
 
-        .slide-card-leaving {
-          pointer-events: none;
-          transform: translate3d(0, var(--card-leaving-y), 0)
-            rotateZ(var(--card-leaving-rotate)) scale(1.075) !important;
-          opacity: 0.94 !important;
-          z-index: 18 !important;
-        }
+        @media (hover: hover) and (pointer: fine) {
+          .slide-card:hover {
+            transform: translate3d(0, var(--card-hover-y), 0)
+              rotateZ(var(--card-hover-rotate)) scale(1.12) !important;
+            opacity: 1 !important;
+            z-index: 30 !important;
+          }
 
-        .slide-card-leaving .slide-card-inner {
-          box-shadow:
-            0 22px 68px rgba(0, 0, 0, 0.58),
-            0 0 0 1px rgba(198, 222, 215, 0.18);
-        }
-
-        .slide-card-active:hover {
-          transform: translate3d(0, var(--card-hover-y), 0)
-            rotateZ(var(--card-hover-rotate)) scale(1.14) !important;
+          .slide-card-active:hover {
+            transform: translate3d(0, var(--card-hover-y), 0)
+              rotateZ(var(--card-hover-rotate)) scale(${SLIDE_ACTIVE_SCALE}) !important;
+          }
         }
 
         .slide-card-inner {
@@ -1559,11 +1778,16 @@ const SlidePage: NextPage<SlidePageProps> = ({
 
         @media (min-width: 901px) and (orientation: portrait) {
           .slide-view {
+            --slide-card-height-active: min(65vh, 790px);
             --slide-card-height: min(56vh, 680px);
           }
 
-          .slide-card {
+          .slide-card-slide {
             width: var(--slide-card-width-desktop-portrait) !important;
+          }
+
+          .slide-card-slide-active {
+            width: var(--slide-card-width-active-desktop-portrait) !important;
           }
 
           .slide-view > aside {
@@ -1592,18 +1816,7 @@ const SlidePage: NextPage<SlidePageProps> = ({
 
           .slide-card-active {
             transform: translate3d(0, 0, 0) rotateZ(var(--card-active-rotate))
-              scale(1.06) !important;
-          }
-
-          .slide-card-leaving {
-            transform: translate3d(0, 0, 0) rotateZ(var(--card-leaving-rotate))
-              scale(1.03) !important;
-          }
-
-          .slide-card:hover,
-          .slide-card-active:hover {
-            transform: translate3d(0, 0, 0) rotateZ(var(--card-hover-rotate))
-              scale(1.06) !important;
+              scale(${SLIDE_ACTIVE_SCALE_MOBILE}) !important;
           }
 
           .slide-controls {
@@ -1625,12 +1838,18 @@ const SlidePage: NextPage<SlidePageProps> = ({
 
         @media (max-width: 900px) and (orientation: portrait) {
           .slide-view {
+            --slide-card-height-active: min(124vw, 480px, 74svh);
             --slide-card-height: min(108vw, 420px);
           }
 
-          .slide-card {
+          .slide-card-slide {
             height: var(--slide-card-height) !important;
             width: var(--slide-card-width-mobile-portrait) !important;
+          }
+
+          .slide-card-slide-active {
+            height: var(--slide-card-height-active) !important;
+            width: var(--slide-card-width-active-mobile-portrait) !important;
           }
 
           .slide-view > aside {
@@ -1680,6 +1899,7 @@ const SlidePage: NextPage<SlidePageProps> = ({
             opacity 760ms cubic-bezier(0.16, 1, 0.3, 1),
             background-color 760ms cubic-bezier(0.16, 1, 0.3, 1),
             backdrop-filter 760ms cubic-bezier(0.16, 1, 0.3, 1);
+          z-index: 420 !important;
         }
 
         .flip-overlay.is-closing {
@@ -1689,6 +1909,11 @@ const SlidePage: NextPage<SlidePageProps> = ({
         }
 
         .flip-overlay-card {
+          aspect-ratio: var(--slide-flip-aspect-default) !important;
+          height: var(--slide-flip-card-height-default) !important;
+          max-height: min(88svh, 760px) !important;
+          max-width: none !important;
+          width: var(--slide-flip-card-width-default) !important;
           opacity: 0.98;
           transform: translate3d(0, 8px, 0) scale(1);
           transition:
@@ -1696,6 +1921,37 @@ const SlidePage: NextPage<SlidePageProps> = ({
             transform 760ms cubic-bezier(0.16, 1, 0.3, 1),
             filter 760ms cubic-bezier(0.16, 1, 0.3, 1);
           filter: drop-shadow(0 18px 42px rgba(0, 0, 0, 0.42));
+        }
+
+        @media (max-width: 900px) and (orientation: portrait) {
+          .flip-overlay {
+            padding: max(18px, env(safe-area-inset-top)) 14px
+              max(18px, env(safe-area-inset-bottom)) !important;
+          }
+
+          .flip-overlay-card {
+            aspect-ratio: var(--slide-flip-aspect-mobile-portrait) !important;
+            height: var(--slide-flip-card-height-mobile-portrait) !important;
+            max-height: min(84svh, 600px) !important;
+            max-width: calc(100vw - 28px) !important;
+            width: var(--slide-flip-card-width-mobile-portrait) !important;
+          }
+        }
+
+        @media (min-width: 901px) and (orientation: portrait) {
+          .flip-overlay-card {
+            height: var(--slide-flip-card-height-desktop-portrait) !important;
+            max-height: min(86svh, 820px) !important;
+            width: var(--slide-flip-card-width-desktop-portrait) !important;
+          }
+        }
+
+        @media (max-width: 900px) and (orientation: landscape) {
+          .flip-overlay-card {
+            height: var(--slide-flip-card-height-landscape) !important;
+            max-height: min(92svh, 540px) !important;
+            width: var(--slide-flip-card-width-landscape) !important;
+          }
         }
 
         .flip-overlay-card.is-flipped {
@@ -1766,8 +2022,18 @@ const SlidePage: NextPage<SlidePageProps> = ({
 
         @media (max-width: 900px) and (orientation: landscape) {
           .slide-view {
+            --slide-card-height-active: min(84svh, 430px);
             --slide-card-height: min(72svh, 360px);
             --slide-card-overlap: 8px;
+          }
+
+          .slide-card-slide {
+            width: var(--slide-card-width-landscape) !important;
+          }
+
+          .slide-card-slide-active {
+            height: var(--slide-card-height-active) !important;
+            width: var(--slide-card-width-active-landscape) !important;
           }
 
           .slide-view > header {
@@ -1808,7 +2074,7 @@ const SlidePage: NextPage<SlidePageProps> = ({
           }
 
           .slide-progress {
-            background: #c5dfd8;
+            background: #9db6b0;
           }
 
           .slide-view > aside {
@@ -1873,29 +2139,10 @@ const SlidePage: NextPage<SlidePageProps> = ({
             transform: none;
           }
 
-          .slide-card {
-            width: var(--slide-card-width-landscape) !important;
-          }
-
-          .slide-card:hover {
-            transform: translate3d(0, 0, 0) rotateZ(var(--card-hover-rotate))
-              scale(1.06) !important;
-          }
-
           .slide-card-active {
             transform: translate3d(0, 0, 0) rotateZ(var(--card-active-rotate))
-              scale(1.06) !important;
+              scale(${SLIDE_ACTIVE_SCALE_MOBILE}) !important;
             opacity: 1 !important;
-          }
-
-          .slide-card-leaving {
-            transform: translate3d(0, 0, 0) rotateZ(var(--card-leaving-rotate))
-              scale(1.03) !important;
-          }
-
-          .slide-card-active:hover {
-            transform: translate3d(0, 0, 0) rotateZ(var(--card-hover-rotate))
-              scale(1.06) !important;
           }
         }
 
@@ -1964,7 +2211,7 @@ const SlidePage: NextPage<SlidePageProps> = ({
         }
 
         .slide-progress {
-          background: #c5dfd8 !important;
+          background: #9db6b0 !important;
         }
 
         .slide-view > aside {

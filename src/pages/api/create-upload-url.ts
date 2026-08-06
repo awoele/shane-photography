@@ -88,7 +88,7 @@ const getFunctionError = async (response: Response) => {
     // Cloud Functions may return a non-JSON platform error.
   }
 
-  return `Upload function failed with status ${response.status}.`;
+  return `上传服务失败，状态码 ${response.status}。`;
 };
 
 const handler = async (
@@ -97,7 +97,7 @@ const handler = async (
 ) => {
   if (request.method !== 'POST') {
     response.setHeader('Allow', 'POST');
-    response.status(405).json({ error: 'Method not allowed.' });
+    response.status(405).json({ error: '请求方法不允许。' });
     return;
   }
 
@@ -110,14 +110,12 @@ const handler = async (
   ).trim();
 
   if (!expectedPassword) {
-    response
-      .status(500)
-      .json({ error: 'ADMIN_UPLOAD_PASSWORD is not configured.' });
+    response.status(500).json({ error: '后台上传密码未配置。' });
     return;
   }
 
   if (inputPassword !== expectedPassword) {
-    response.status(401).json({ error: 'Invalid admin password.' });
+    response.status(401).json({ error: '后台密码不正确。' });
     return;
   }
 
@@ -127,19 +125,19 @@ const handler = async (
   const rawLivePhotoPairKey = toCleanString(body.livePhotoPairKey);
 
   if (!filename) {
-    response.status(400).json({ error: 'Filename is required.' });
+    response.status(400).json({ error: '缺少文件名。' });
     return;
   }
 
   if (!ALLOWED_CONTENT_TYPES.has(contentType)) {
     response.status(400).json({
-      error: 'Only image and Live Photo video files can be uploaded.',
+      error: '只能上传图片或 Live Photo 视频文件。',
     });
     return;
   }
 
   if (!isAllowedCategory(category)) {
-    response.status(400).json({ error: 'Invalid photo category.' });
+    response.status(400).json({ error: '照片分类无效。' });
     return;
   }
 
@@ -147,7 +145,7 @@ const handler = async (
   const uploadFunctionSecret = process.env.UPLOAD_FUNCTION_SECRET;
 
   if (!uploadFunctionUrl || !uploadFunctionSecret) {
-    response.status(500).json({ error: 'Upload service is not configured.' });
+    response.status(500).json({ error: '上传服务未配置。' });
     return;
   }
 
@@ -192,7 +190,7 @@ const handler = async (
 
     response.status(200).json(data);
   } catch (_error) {
-    response.status(502).json({ error: 'Could not reach upload service.' });
+    response.status(502).json({ error: '无法连接上传服务。' });
   }
 };
 

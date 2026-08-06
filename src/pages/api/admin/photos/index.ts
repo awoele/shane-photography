@@ -2,11 +2,17 @@ import type { NextApiRequest, NextApiResponse } from 'next';
 
 import {
   type CmsPhoto,
-  type CmsPhotoStatus,
   type CmsStats,
   getCmsStats,
   listCmsPhotos,
 } from '@/lib/server/photoCms';
+
+type AdminPhotoStatusFilter =
+  | 'all'
+  | 'draft'
+  | 'hidden'
+  | 'published'
+  | 'removed';
 
 type AdminPhotosResponse =
   | {
@@ -20,11 +26,16 @@ type AdminPhotosResponse =
 const getQueryValue = (value: string | string[] | undefined) =>
   Array.isArray(value) ? value[0] : value;
 
-const getStatus = (value: string | string[] | undefined) => {
+const getStatus = (
+  value: string | string[] | undefined,
+): AdminPhotoStatusFilter => {
   const status = getQueryValue(value);
 
-  return status === 'draft' || status === 'hidden' || status === 'published'
-    ? (status as CmsPhotoStatus)
+  return status === 'draft' ||
+    status === 'hidden' ||
+    status === 'published' ||
+    status === 'removed'
+    ? status
     : 'all';
 };
 
@@ -41,6 +52,7 @@ const handler = async (
   try {
     const photos = await listCmsPhotos({
       category: getQueryValue(request.query.category),
+      includeDeleted: true,
       query: getQueryValue(request.query.query),
       status: getStatus(request.query.status),
     });

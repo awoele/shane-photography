@@ -1,4 +1,5 @@
 export const SLIDE_LANDSCAPE_REQUEST_KEY = 'slide-landscape-requested';
+const SLIDE_LANDSCAPE_REQUEST_TTL_MS = 12_000;
 
 type LandscapeRequestResult =
   | 'already-landscape'
@@ -12,6 +13,15 @@ type LockableOrientation = ScreenOrientation & {
 };
 
 const MOBILE_SCREEN_LIMIT = 900;
+const WECHAT_USER_AGENT_PATTERN = /MicroMessenger/i;
+
+export const isWeChatBrowser = () => {
+  if (typeof window === 'undefined') {
+    return false;
+  }
+
+  return WECHAT_USER_AGENT_PATTERN.test(window.navigator.userAgent);
+};
 
 export const markSlideLandscapeRequest = () => {
   if (typeof window === 'undefined') {
@@ -24,12 +34,36 @@ export const markSlideLandscapeRequest = () => {
   );
 };
 
+export const isSlideLandscapeRequestFresh = (
+  requestedAt: string | null,
+  now = Date.now(),
+) => {
+  const requestedTime = Number(requestedAt);
+
+  return (
+    Number.isFinite(requestedTime) &&
+    requestedTime > 0 &&
+    now >= requestedTime &&
+    now - requestedTime <= SLIDE_LANDSCAPE_REQUEST_TTL_MS
+  );
+};
+
 export const hasSlideLandscapeRequest = () => {
   if (typeof window === 'undefined') {
     return false;
   }
 
-  return window.sessionStorage.getItem(SLIDE_LANDSCAPE_REQUEST_KEY) !== null;
+  const requestedAt = window.sessionStorage.getItem(
+    SLIDE_LANDSCAPE_REQUEST_KEY,
+  );
+
+  if (isSlideLandscapeRequestFresh(requestedAt, Date.now())) {
+    return true;
+  }
+
+  window.sessionStorage.removeItem(SLIDE_LANDSCAPE_REQUEST_KEY);
+
+  return false;
 };
 
 export const isSlideMobileViewport = () => {
@@ -56,6 +90,17 @@ export const isPortraitViewport = () => {
     window.innerHeight > window.innerWidth
   );
 };
+
+export const shouldAutoRedirectLandscapeToSlide = (pathname: string) =>
+  pathname === '/';
+
+export const shouldAutoRedirectLandscapeToSlideAfterRequest = ({
+  hasLandscapeRequest: requested,
+  pathname,
+}: {
+  hasLandscapeRequest: boolean;
+  pathname: string;
+}) => requested && shouldAutoRedirectLandscapeToSlide(pathname);
 
 export const requestSlideFullscreen = async () => {
   if (typeof document === 'undefined' || !isSlideMobileViewport()) {

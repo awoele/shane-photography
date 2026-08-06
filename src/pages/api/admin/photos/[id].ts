@@ -26,6 +26,17 @@ const toPatch = (body: unknown): CmsPhotoPatch => {
 
   const record = body as Record<string, unknown>;
   const { status } = record;
+  let sortOrder: number | undefined;
+
+  if (
+    typeof record.sortOrder === 'number' &&
+    Number.isFinite(record.sortOrder)
+  ) {
+    sortOrder = record.sortOrder;
+  } else if (typeof record.sortOrder === 'string') {
+    sortOrder = Number.parseInt(record.sortOrder, 10);
+  }
+
   const nextStatus =
     status === 'draft' || status === 'hidden' || status === 'published'
       ? (status as CmsPhotoStatus)
@@ -49,6 +60,9 @@ const toPatch = (body: unknown): CmsPhotoPatch => {
       ? { location: record.location }
       : {}),
     ...(nextStatus ? { status: nextStatus } : {}),
+    ...(sortOrder !== undefined && Number.isFinite(sortOrder)
+      ? { sortOrder }
+      : {}),
     ...(Array.isArray(record.tags) ? { tags: record.tags } : {}),
     ...(typeof record.title === 'string' ? { title: record.title } : {}),
   };

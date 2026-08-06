@@ -37,7 +37,7 @@ export type PhotoNeighbors = {
   next: Photo | null;
 };
 
-export const DEFAULT_FILMSTRIP_THUMBNAIL_HEIGHT = 88;
+export const DEFAULT_FILMSTRIP_THUMBNAIL_HEIGHT = 80;
 export const ACTIVE_FILMSTRIP_THUMBNAIL_HEIGHT =
   DEFAULT_FILMSTRIP_THUMBNAIL_HEIGHT;
 
@@ -582,7 +582,7 @@ export const getFilmstripThumbnailWidth = (
 export const getFilmstripImageToneClass = (isActive: boolean) =>
   isActive
     ? 'opacity-100 brightness-100'
-    : 'contrast-95 opacity-[0.72] brightness-[0.86] grayscale group-hover:grayscale-0 group-hover:opacity-95 group-hover:brightness-105 group-hover:contrast-100';
+    : 'contrast-95 brightness-[0.76] grayscale group-hover:grayscale-0 group-hover:brightness-105 group-hover:contrast-100';
 
 export const getFilmstripPreviewDimensions = (
   photo: Photo,

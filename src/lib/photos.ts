@@ -17,6 +17,7 @@ export type Photo = {
   id: string;
   title: string;
   category: string;
+  originalCategory?: string;
   src: string;
   thumbnail: string;
   description: string;
@@ -41,6 +42,7 @@ export type Photo = {
   manifestLocation?: AfilmoryLocationInfo | null;
   rating?: number;
   s3Key?: string;
+  sortOrder?: number;
   tags?: string[];
   thumbHash?: string;
   toneAnalysis?: AfilmoryToneAnalysis | null;
@@ -576,6 +578,35 @@ export const getPhotoPanelFields = (photo: Photo) =>
 export const getPhotoTimestamp = (photo: Photo) =>
   parsePhotoDate(photo.dateTaken || photo.date);
 
+export const getPhotoSortOrder = (photo: Photo) =>
+  typeof photo.sortOrder === 'number' && Number.isFinite(photo.sortOrder)
+    ? photo.sortOrder
+    : undefined;
+
+export const comparePhotosByManagedOrder = (first: Photo, second: Photo) => {
+  if (first.category === second.category) {
+    const firstOrder = getPhotoSortOrder(first);
+    const secondOrder = getPhotoSortOrder(second);
+
+    if (firstOrder !== undefined && secondOrder !== undefined) {
+      return firstOrder - secondOrder || first.id.localeCompare(second.id);
+    }
+
+    if (firstOrder !== undefined) {
+      return -1;
+    }
+
+    if (secondOrder !== undefined) {
+      return 1;
+    }
+  }
+
+  return (
+    getPhotoTimestamp(second) - getPhotoTimestamp(first) ||
+    first.id.localeCompare(second.id)
+  );
+};
+
 export const createSeededRandom = (seed: number) => {
   let state = seed % 2147483647;
 
@@ -635,6 +666,7 @@ const normalizePhoto = (item: unknown): Photo => {
     pickFirst(record, ['rating', 'Rating']) ??
       pickFirst(exifRecord, ['rating', 'Rating']),
   );
+  const sortOrder = toOptionalNumber(record.sortOrder);
   const thumbHash = toText(pickFirst(record, ['thumbHash', 'thumbhash']));
   const video = normalizePhotoVideo(record);
   const toneAnalysis = normalizeToneAnalysis(record.toneAnalysis);
@@ -648,6 +680,7 @@ const normalizePhoto = (item: unknown): Photo => {
     id,
     title: toText(record.title) || id,
     category,
+    originalCategory: toText(record.originalCategory) || category,
     src: resolveAssetUrl(record.src ?? record.originalUrl),
     thumbnail: resolveAssetUrl(record.thumbnail ?? record.thumbnailUrl),
     description: toText(record.description),
@@ -672,6 +705,7 @@ const normalizePhoto = (item: unknown): Photo => {
     ...(manifestLocation ? { manifestLocation } : {}),
     ...(rating ? { rating } : {}),
     ...(s3Key ? { s3Key } : {}),
+    ...(sortOrder !== undefined ? { sortOrder } : {}),
     ...(tags.length > 0 ? { tags } : {}),
     ...(thumbHash ? { thumbHash } : {}),
     ...(toneAnalysis ? { toneAnalysis } : {}),
@@ -712,11 +746,7 @@ export const fetchPhotos = async (options: FetchPhotosOptions = {}) => {
   return data
     .map(normalizePhoto)
     .filter(isUsablePhoto)
-    .sort(
-      (first, second) =>
-        getPhotoTimestamp(second) - getPhotoTimestamp(first) ||
-        first.id.localeCompare(second.id),
-    );
+    .sort(comparePhotosByManagedOrder);
 };
 
 export const buildCategoryList = (photos: Photo[]) =>

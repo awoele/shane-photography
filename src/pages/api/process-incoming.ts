@@ -20,8 +20,10 @@ type ProcessIncomingResponse =
   | Record<string, unknown>;
 
 const IMAGE_EXTENSIONS = /\.(jpe?g|png|webp|heic|heif)$/i;
+const PROCESS_CHUNK_SIZE = 20;
 
 type ProcessingFunctionResult = {
+  error: string;
   image: string;
   livePhoto: boolean;
   status: 'failed' | 'processed';
@@ -69,6 +71,23 @@ const getFilenameFromObjectPath = (objectPath: string) =>
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null;
 
+const toCount = (value: unknown) =>
+  typeof value === 'number' && Number.isFinite(value) ? value : 0;
+
+const chunkObjectPaths = (objectPaths: string[]) => {
+  if (objectPaths.length === 0) {
+    return [objectPaths];
+  }
+
+  const chunks: string[][] = [];
+
+  for (let index = 0; index < objectPaths.length; index += PROCESS_CHUNK_SIZE) {
+    chunks.push(objectPaths.slice(index, index + PROCESS_CHUNK_SIZE));
+  }
+
+  return chunks;
+};
+
 const readProcessingResults = (detail: unknown): ProcessingFunctionResult[] => {
   if (!isRecord(detail) || !Array.isArray(detail.results)) {
     return [];
@@ -81,6 +100,7 @@ const readProcessingResults = (detail: unknown): ProcessingFunctionResult[] => {
         item.status === 'failed' ? 'failed' : 'processed';
 
       return {
+        error: typeof item.error === 'string' ? item.error : '',
         image: typeof item.image === 'string' ? item.image : '',
         livePhoto: item.livePhoto === true,
         status,
@@ -153,9 +173,7 @@ const markJobsFromProcessingDetail = async (
     return;
   }
 
-  const failed = results
-    .filter((result) => result.status === 'failed')
-    .map((result) => result.image);
+  const failedResults = results.filter((result) => result.status === 'failed');
   const completedWithLive = results
     .filter((result) => result.status === 'processed' && result.livePhoto)
     .map((result) => result.image);
@@ -187,9 +205,10 @@ const markJobsFromProcessingDetail = async (
     });
   }
 
-  if (failed.length > 0) {
-    await markJobs(failed, {
-      error: 'Processing failed.',
+  for (const result of failedResults) {
+    // eslint-disable-next-line no-await-in-loop
+    await markJobs([result.image], {
+      error: result.error || '处理失败。',
       exifStatus: 'failed',
       livePhotoStatus: 'failed',
       progress: 100,
@@ -216,7 +235,7 @@ const handler = async (
 ) => {
   if (request.method !== 'POST') {
     response.setHeader('Allow', 'POST');
-    response.status(405).json({ error: 'Method not allowed.' });
+    response.status(405).json({ error: '请求方法不允许。' });
     return;
   }
 
@@ -229,23 +248,16 @@ const handler = async (
   ).trim();
 
   if (!expectedPassword) {
-    response
-      .status(500)
-      .json({ error: 'ADMIN_UPLOAD_PASSWORD is not configured.' });
+    response.status(500).json({ error: '后台上传密码未配置。' });
     return;
   }
 
   if (inputPassword !== expectedPassword) {
-    response.status(401).json({ error: 'Invalid admin password.' });
+    response.status(401).json({ error: '后台密码不正确。' });
     return;
   }
 
   const objectPaths = normalizeObjectPaths(body.objectPaths);
-
-  if (objectPaths.length === 0) {
-    response.status(400).json({ error: 'No incoming images to process.' });
-    return;
-  }
 
   const processFunctionUrl = String(
     process.env.PROCESS_FUNCTION_URL ?? '',
@@ -258,8 +270,7 @@ const handler = async (
 
   if (!processFunctionUrl || !processFunctionSecret) {
     response.status(500).json({
-      error:
-        'PROCESS_FUNCTION_URL or PROCESS_FUNCTION_SECRET is not configured.',
+      error: '处理服务地址或密钥未配置。',
     });
     return;
   }
@@ -274,51 +285,84 @@ const handler = async (
       status: 'processing',
     });
 
-    const functionResponse = await fetch(processFunctionUrl, {
-      body: JSON.stringify({
-        objectPaths,
-      }),
-      headers: {
-        'Content-Type': 'application/json',
-        'x-process-function-secret': processFunctionSecret,
-      },
-      method: 'POST',
-    });
+    const chunks = chunkObjectPaths(objectPaths);
+    const details: unknown[] = [];
 
-    const detail = await readResponseDetail(functionResponse);
+    for (const chunk of chunks) {
+      // eslint-disable-next-line no-await-in-loop
+      const functionResponse = await fetch(processFunctionUrl, {
+        body: JSON.stringify({
+          objectPaths: chunk,
+        }),
+        headers: {
+          'Content-Type': 'application/json',
+          'x-process-function-secret': processFunctionSecret,
+        },
+        method: 'POST',
+      });
 
-    if (!functionResponse.ok) {
-      await markJobs(objectPaths, {
-        error:
-          typeof detail === 'string'
-            ? detail
-            : 'process-incoming returned a non-200 response.',
-        exifStatus: 'failed',
-        livePhotoStatus: 'failed',
-        progress: 100,
-        stage: 'Failed',
-        status: 'failed',
-      });
-      response.status(502).json({
-        detail,
-        error: 'process-incoming returned a non-200 response.',
-        status: functionResponse.status,
-      });
+      // eslint-disable-next-line no-await-in-loop
+      const detail = await readResponseDetail(functionResponse);
+
+      if (!functionResponse.ok) {
+        // eslint-disable-next-line no-await-in-loop
+        await markJobs(chunk, {
+          error:
+            typeof detail === 'string' ? detail : '处理服务返回了非 200 响应。',
+          exifStatus: 'failed',
+          livePhotoStatus: 'failed',
+          progress: 100,
+          stage: 'Failed',
+          status: 'failed',
+        });
+        response.status(502).json({
+          detail,
+          error: '处理服务返回了非 200 响应。',
+          status: functionResponse.status,
+        });
+        return;
+      }
+
+      // eslint-disable-next-line no-await-in-loop
+      await markJobsFromProcessingDetail(chunk, detail);
+      details.push(detail);
+    }
+
+    if (details.length === 1) {
+      const [detail] = details;
+
+      response
+        .status(200)
+        .json(
+          typeof detail === 'object' && detail !== null
+            ? (detail as Record<string, unknown>)
+            : { detail },
+        );
       return;
     }
 
-    await markJobsFromProcessingDetail(objectPaths, detail);
+    const records = details.filter(isRecord);
+    const results = records.flatMap((detail) =>
+      Array.isArray(detail.results) ? detail.results : [],
+    );
 
-    response
-      .status(200)
-      .json(
-        typeof detail === 'object' && detail !== null
-          ? (detail as Record<string, unknown>)
-          : { detail },
-      );
+    response.status(200).json({
+      batches: details.length,
+      failed: records.reduce((sum, detail) => sum + toCount(detail.failed), 0),
+      mode: 'batched-objectPaths',
+      processed: records.reduce(
+        (sum, detail) => sum + toCount(detail.processed),
+        0,
+      ),
+      results,
+      scanned: records.reduce(
+        (sum, detail) => sum + toCount(detail.scanned),
+        0,
+      ),
+    });
   } catch (error) {
     await markJobs(objectPaths, {
-      error: error instanceof Error ? error.message : 'Unknown error.',
+      error: error instanceof Error ? error.message : '未知错误。',
       exifStatus: 'failed',
       livePhotoStatus: 'failed',
       progress: 100,
@@ -326,8 +370,8 @@ const handler = async (
       status: 'failed',
     });
     response.status(502).json({
-      detail: error instanceof Error ? error.message : 'Unknown error.',
-      error: 'Could not reach process-incoming function.',
+      detail: error instanceof Error ? error.message : '未知错误。',
+      error: '无法连接照片处理服务。',
       status: 502,
     });
   }

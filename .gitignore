@@ -54,3 +54,6 @@ body.json
 /photos/
 /thumbnails/
 /data/
+
+.vercel
+.env*

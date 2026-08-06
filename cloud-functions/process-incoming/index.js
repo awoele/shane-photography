@@ -9,11 +9,13 @@ const PROCESSING_PREFIX = 'processing/';
 const PROCESSED_PREFIX = 'processed/';
 const FAILED_PREFIX = 'failed/';
 const PHOTOS_JSON_PATH = 'data/photos.json';
+const CMS_OVERRIDES_JSON_PATH = 'data/photo-cms-overrides.json';
 const LARGE_SIZE = 2560;
 const THUMBNAIL_SIZE = 800;
 const MAX_INPUT_PIXELS = 500_000_000;
 const IMAGE_EXTENSIONS = /\.(jpe?g|png|webp|heic|heif)$/i;
 const LIVE_VIDEO_EXTENSIONS = ['.mov', '.MOV', '.mp4', '.MP4'];
+const IMPORT_REVIEW_SIGNED_URL_TTL_MS = 15 * 60 * 1000;
 
 const ALLOWED_CATEGORIES = new Set([
   'alex-webb',
@@ -30,10 +32,42 @@ const ALLOWED_CATEGORIES = new Set([
   'travel',
 ]);
 
+const CMS_PHOTO_STATUSES = new Set(['draft', 'hidden', 'published']);
+
 const storage = new Storage();
 
 const toCleanString = (value) =>
   typeof value === 'string' ? value.trim() : '';
+
+const getJsonBody = (req) => {
+  const body = req && req.body;
+
+  if (!body) {
+    return {};
+  }
+
+  if (Buffer.isBuffer(body)) {
+    try {
+      return JSON.parse(body.toString('utf8'));
+    } catch (_error) {
+      return {};
+    }
+  }
+
+  if (typeof body === 'string') {
+    try {
+      return JSON.parse(body);
+    } catch (_error) {
+      return {};
+    }
+  }
+
+  if (typeof body === 'object' && !Array.isArray(body)) {
+    return body;
+  }
+
+  return {};
+};
 
 const padNumber = (value) => String(value).padStart(3, '0');
 
@@ -59,7 +93,8 @@ const isAuthorized = (req) => {
 
   return (
     expectedSecret &&
-    (authHeader === `Bearer ${expectedSecret}` || headerSecret === expectedSecret)
+    (authHeader === `Bearer ${expectedSecret}` ||
+      headerSecret === expectedSecret)
   );
 };
 
@@ -109,7 +144,11 @@ const movePair = async (bucket, imageName, jsonName, targetImageName) => {
   };
 };
 
-const moveObjectWithOptionalSidecar = async (bucket, objectName, targetName) => {
+const moveObjectWithOptionalSidecar = async (
+  bucket,
+  objectName,
+  targetName,
+) => {
   await moveFile(bucket, objectName, targetName);
 
   const jsonName = `${objectName}.json`;
@@ -242,19 +281,305 @@ const readPhotosJson = async (publicBucket) => {
 };
 
 const savePhotosJson = async (publicBucket, photos) => {
-  await publicBucket.file(PHOTOS_JSON_PATH).save(
-    JSON.stringify(photos, null, 2),
-    {
+  await publicBucket
+    .file(PHOTOS_JSON_PATH)
+    .save(JSON.stringify(photos, null, 2), {
       cacheControl: 'public, max-age=60',
+      contentType: 'application/json; charset=utf-8',
+      resumable: false,
+    });
+};
+
+const readCmsOverridesJson = async (publicBucket) => {
+  const data = await downloadJson(
+    publicBucket.file(CMS_OVERRIDES_JSON_PATH),
+    [],
+  );
+
+  return Array.isArray(data) ? data : [];
+};
+
+const saveCmsOverridesJson = async (publicBucket, overrides) => {
+  await publicBucket.file(CMS_OVERRIDES_JSON_PATH).save(
+    JSON.stringify(
+      [...overrides].sort((first, second) =>
+        String(first.id || '').localeCompare(String(second.id || '')),
+      ),
+      null,
+      2,
+    ),
+    {
+      cacheControl: 'public, max-age=15',
       contentType: 'application/json; charset=utf-8',
       resumable: false,
     },
   );
 };
 
+const normalizeTags = (value) => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return Array.from(
+    new Set(
+      value.map((tag) => toCleanString(tag).toLowerCase()).filter(Boolean),
+    ),
+  );
+};
+
+const toNumber = (value) => {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (typeof value === 'string') {
+    const parsed = Number.parseInt(value, 10);
+
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+
+  return undefined;
+};
+
+const sanitizeCmsPatch = (value) => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return {};
+  }
+
+  const patch = {};
+  const textFields = [
+    'aperture',
+    'camera',
+    'date',
+    'dateTaken',
+    'description',
+    'focalLength',
+    'iso',
+    'lens',
+    'location',
+    'originalCategory',
+    'shutterSpeed',
+    'thumbnail',
+    'title',
+  ];
+  const numberFields = ['height', 'rating', 'sortOrder', 'width'];
+
+  textFields.forEach((field) => {
+    if (value[field] !== undefined) {
+      patch[field] = toCleanString(value[field]);
+    }
+  });
+
+  numberFields.forEach((field) => {
+    if (value[field] !== undefined) {
+      const parsed = toNumber(value[field]);
+
+      if (parsed !== undefined) {
+        patch[field] = parsed;
+      }
+    }
+  });
+
+  if (typeof value.category === 'string') {
+    const category = toCleanString(value.category).toLowerCase();
+
+    if (ALLOWED_CATEGORIES.has(category)) {
+      patch.category = category;
+    }
+  }
+
+  if (typeof value.featured === 'boolean') {
+    patch.featured = value.featured;
+  }
+
+  if (
+    value.manifestLocation &&
+    typeof value.manifestLocation === 'object' &&
+    !Array.isArray(value.manifestLocation)
+  ) {
+    patch.manifestLocation = value.manifestLocation;
+  }
+
+  if (CMS_PHOTO_STATUSES.has(value.status)) {
+    patch.status = value.status;
+  }
+
+  if (Array.isArray(value.tags)) {
+    patch.tags = normalizeTags(value.tags);
+  }
+
+  return patch;
+};
+
+const normalizeCmsOverride = (value) => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+
+  const id = toCleanString(value.id);
+
+  if (!id) {
+    return null;
+  }
+
+  return {
+    ...sanitizeCmsPatch(value),
+    id,
+    ...(value.createdAt ? { createdAt: toCleanString(value.createdAt) } : {}),
+    ...(value.deleted === true ? { deleted: true } : {}),
+    ...(value.updatedAt ? { updatedAt: toCleanString(value.updatedAt) } : {}),
+  };
+};
+
+const getCmsIds = (value) =>
+  Array.isArray(value)
+    ? Array.from(new Set(value.map(toCleanString).filter(Boolean)))
+    : [];
+
+const handleCmsMutation = async ({ body, publicBucket, res }) => {
+  const cmsAction = toCleanString(body.cmsAction);
+  const photos = await readPhotosJson(publicBucket);
+  const photoIds = new Set(
+    photos.map((photo) => toCleanString(photo && photo.id)).filter(Boolean),
+  );
+  const existingOverrides = (await readCmsOverridesJson(publicBucket))
+    .map(normalizeCmsOverride)
+    .filter(Boolean);
+  const overridesById = new Map(
+    existingOverrides.map((override) => [override.id, override]),
+  );
+  const now = new Date().toISOString();
+
+  if (cmsAction === 'patch') {
+    const id = toCleanString(body.id);
+
+    if (!id || !photoIds.has(id)) {
+      res
+        .status(404)
+        .json({ error: `Photo ${id || '(missing)'} was not found.` });
+      return;
+    }
+
+    const current = overridesById.get(id) || { createdAt: now, id };
+
+    overridesById.set(id, {
+      ...current,
+      ...sanitizeCmsPatch(body.patch),
+      deleted: false,
+      id,
+      updatedAt: now,
+    });
+    await saveCmsOverridesJson(
+      publicBucket,
+      Array.from(overridesById.values()),
+    );
+    res.status(200).json({ updated: 1, updatedAt: now });
+    return;
+  }
+
+  if (cmsAction === 'bulkPatch') {
+    const ids = getCmsIds(body.ids).filter((id) => photoIds.has(id));
+    const patch = sanitizeCmsPatch(body.patch);
+
+    ids.forEach((id) => {
+      const current = overridesById.get(id) || { createdAt: now, id };
+
+      overridesById.set(id, {
+        ...current,
+        ...patch,
+        deleted: false,
+        id,
+        updatedAt: now,
+      });
+    });
+    await saveCmsOverridesJson(
+      publicBucket,
+      Array.from(overridesById.values()),
+    );
+    res.status(200).json({ updated: ids.length, updatedAt: now });
+    return;
+  }
+
+  if (cmsAction === 'delete') {
+    const ids = getCmsIds(body.ids).filter((id) => photoIds.has(id));
+
+    ids.forEach((id) => {
+      const current = overridesById.get(id) || { createdAt: now, id };
+
+      overridesById.set(id, {
+        ...current,
+        deleted: true,
+        id,
+        status: 'hidden',
+        updatedAt: now,
+      });
+    });
+    await saveCmsOverridesJson(
+      publicBucket,
+      Array.from(overridesById.values()),
+    );
+    res.status(200).json({ deleted: ids.length, updatedAt: now });
+    return;
+  }
+
+  if (cmsAction === 'restore') {
+    const ids = getCmsIds(body.ids).filter((id) => photoIds.has(id));
+
+    ids.forEach((id) => {
+      const current = overridesById.get(id) || { createdAt: now, id };
+
+      overridesById.set(id, {
+        ...current,
+        deleted: false,
+        id,
+        status: current.status === 'hidden' ? 'published' : current.status,
+        updatedAt: now,
+      });
+    });
+    await saveCmsOverridesJson(
+      publicBucket,
+      Array.from(overridesById.values()),
+    );
+    res.status(200).json({ updated: ids.length, updatedAt: now });
+    return;
+  }
+
+  if (cmsAction === 'sequence') {
+    const ids = getCmsIds(body.ids).filter((id) => photoIds.has(id));
+    const sortStart = toNumber(body.sortStart);
+    const titlePrefix = toCleanString(body.titlePrefix);
+    const titleStart = toNumber(body.titleStart) ?? 1;
+
+    ids.forEach((id, index) => {
+      const current = overridesById.get(id) || { createdAt: now, id };
+
+      overridesById.set(id, {
+        ...current,
+        ...(sortStart !== undefined ? { sortOrder: sortStart + index } : {}),
+        ...(titlePrefix
+          ? { title: `${titlePrefix}-${titleStart + index}` }
+          : {}),
+        id,
+        updatedAt: now,
+      });
+    });
+    await saveCmsOverridesJson(
+      publicBucket,
+      Array.from(overridesById.values()),
+    );
+    res.status(200).json({ updated: ids.length, updatedAt: now });
+    return;
+  }
+
+  res.status(400).json({ error: `Unsupported CMS action: ${cmsAction}.` });
+};
+
 const getExistingMaxNumber = async (publicBucket, photos, category) => {
   const idPattern = new RegExp(`^${category}-(\\d+)$`);
-  const filePattern = new RegExp(`^photos/${category}/${category}-(\\d+)\\.jpg$`);
+  const filePattern = new RegExp(
+    `^photos/${category}/${category}-(\\d+)\\.jpg$`,
+  );
   let maxNumber = 0;
 
   photos.forEach((photo) => {
@@ -379,12 +704,13 @@ const formatCamera = (exif) => {
 
 const extractExif = async (buffer) => {
   try {
-    const exif = (await exifr.parse(buffer, {
-      exif: true,
-      ifd0: true,
-      interop: true,
-      tiff: true,
-    })) || {};
+    const exif =
+      (await exifr.parse(buffer, {
+        exif: true,
+        ifd0: true,
+        interop: true,
+        tiff: true,
+      })) || {};
 
     return {
       aperture: formatAperture(exif.FNumber || exif.ApertureValue),
@@ -470,6 +796,116 @@ const listIncomingImages = async (incomingBucket) => {
     .filter((file) => IMAGE_EXTENSIONS.test(file.name))
     .filter((file) => !file.name.endsWith('.json'))
     .sort((first, second) => first.name.localeCompare(second.name));
+};
+
+const isIncomingReviewObject = (objectName) =>
+  objectName.startsWith(INCOMING_PREFIX) &&
+  (IMAGE_EXTENSIONS.test(objectName) || objectName.endsWith('.json'));
+
+const createPreviewUrl = async (file) => {
+  try {
+    const [url] = await file.getSignedUrl({
+      action: 'read',
+      expires: Date.now() + IMPORT_REVIEW_SIGNED_URL_TTL_MS,
+    });
+
+    return url;
+  } catch (_error) {
+    return '';
+  }
+};
+
+const listIncomingReviewObjects = async (incomingBucket) => {
+  const [files] = await incomingBucket.getFiles({
+    prefix: INCOMING_PREFIX,
+  });
+
+  const reviewFiles = files
+    .filter((file) => isIncomingReviewObject(file.name))
+    .sort((first, second) => first.name.localeCompare(second.name));
+
+  return Promise.all(
+    reviewFiles.map(async (file) => {
+      const [metadata] = await file.getMetadata();
+      const object = {
+        contentType: toCleanString(metadata.contentType),
+        name: file.name,
+        size: Number(metadata.size) || 0,
+        updated: toCleanString(metadata.updated || metadata.timeCreated),
+      };
+
+      if (!IMAGE_EXTENSIONS.test(file.name)) {
+        return object;
+      }
+
+      const previewUrl = await createPreviewUrl(file);
+
+      return previewUrl ? { ...object, previewUrl } : object;
+    }),
+  );
+};
+
+const normalizeImportReviewObjectPaths = (value) => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return Array.from(
+    new Set(
+      value
+        .filter((item) => typeof item === 'string')
+        .map((item) => item.trim())
+        .filter((item) => item.startsWith(INCOMING_PREFIX))
+        .filter((item) => !item.includes('..'))
+        .filter((item) => isIncomingReviewObject(item)),
+    ),
+  );
+};
+
+const archiveImportReviewObjects = async (incomingBucket, objectPaths) => {
+  const archived = [];
+
+  for (const objectPath of normalizeImportReviewObjectPaths(objectPaths)) {
+    const file = incomingBucket.file(objectPath);
+    // eslint-disable-next-line no-await-in-loop
+    const [exists] = await file.exists();
+
+    if (!exists) {
+      // eslint-disable-next-line no-continue
+      continue;
+    }
+
+    // eslint-disable-next-line no-await-in-loop
+    await moveFile(incomingBucket, objectPath, getFailedName(objectPath));
+    archived.push(objectPath);
+  }
+
+  return archived;
+};
+
+const handleImportReviewAction = async ({ body, incomingBucket, res }) => {
+  const importReviewAction = toCleanString(body.importReviewAction);
+
+  if (importReviewAction === 'list') {
+    const objects = await listIncomingReviewObjects(incomingBucket);
+
+    res.status(200).json({ objects });
+    return;
+  }
+
+  if (importReviewAction === 'archive') {
+    const archived = await archiveImportReviewObjects(
+      incomingBucket,
+      body.objectPaths,
+    );
+
+    res.status(200).json({ archived, archivedCount: archived.length });
+    return;
+  }
+
+  res
+    .status(400)
+    .json({ error: `Unsupported import review action: ${importReviewAction}.` });
 };
 
 const normalizeObjectPaths = (value) => {
@@ -596,7 +1032,11 @@ const processOneImage = async ({
     outputThumbnailPath = `thumbnails/${category}/${id}.jpg`;
 
     await uploadJpeg(publicBucket, outputPhotoPath, variant.largeBuffer);
-    await uploadJpeg(publicBucket, outputThumbnailPath, variant.thumbnailBuffer);
+    await uploadJpeg(
+      publicBucket,
+      outputThumbnailPath,
+      variant.thumbnailBuffer,
+    );
 
     if (processingLiveVideoName) {
       const videoExtension =
@@ -701,7 +1141,8 @@ const processOneImage = async ({
     }
 
     return {
-      error: error instanceof Error ? error.message : 'Unknown processing error.',
+      error:
+        error instanceof Error ? error.message : 'Unknown processing error.',
       image: imageFile.name,
       status: 'failed',
     };
@@ -730,7 +1171,19 @@ exports.processIncoming = async (req, res) => {
   const maxItems = Math.max(1, Number(process.env.MAX_ITEMS_PER_RUN) || 20);
   const incomingBucket = storage.bucket(incomingBucketName);
   const publicBucket = storage.bucket(publicBucketName);
-  const requestedObjectPaths = normalizeObjectPaths(req.body && req.body.objectPaths);
+  const body = getJsonBody(req);
+
+  if (toCleanString(body.importReviewAction)) {
+    await handleImportReviewAction({ body, incomingBucket, res });
+    return;
+  }
+
+  if (toCleanString(body.cmsAction)) {
+    await handleCmsMutation({ body, publicBucket, res });
+    return;
+  }
+
+  const requestedObjectPaths = normalizeObjectPaths(body.objectPaths);
   const photos = await readPhotosJson(publicBucket);
   const categories = Array.from(ALLOWED_CATEGORIES);
   const nextNumbersByCategory = {};
@@ -747,10 +1200,9 @@ exports.processIncoming = async (req, res) => {
 
   const incomingImages =
     requestedObjectPaths.length > 0
-      ? (await getExplicitIncomingImages(
-          incomingBucket,
-          requestedObjectPaths,
-        )).slice(0, maxItems)
+      ? (
+          await getExplicitIncomingImages(incomingBucket, requestedObjectPaths)
+        ).slice(0, maxItems)
       : (await listIncomingImages(incomingBucket)).slice(0, maxItems);
   const results = [];
 

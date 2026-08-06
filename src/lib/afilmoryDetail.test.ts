@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import {
+  ACTIVE_FILMSTRIP_THUMBNAIL_HEIGHT,
   createAfilmoryDetailSections,
+  DEFAULT_FILMSTRIP_THUMBNAIL_HEIGHT,
   getCircularPhotoNeighbors,
   getFilmstripImageToneClass,
   getFilmstripPhotos,
@@ -255,7 +257,7 @@ describe('afilmory detail helpers', () => {
   });
 
   it('scales filmstrip thumbnails from the original photo ratio', () => {
-    assert.equal(getFilmstripThumbnailWidth(buildPhoto()), 132);
+    assert.equal(getFilmstripThumbnailWidth(buildPhoto()), 120);
     assert.equal(getFilmstripThumbnailWidth(buildPhoto(), 96), 144);
     assert.equal(
       getFilmstripThumbnailWidth(buildPhoto({ width: 1707, height: 2560 }), 96),
@@ -267,12 +269,18 @@ describe('afilmory detail helpers', () => {
     );
   });
 
+  it('keeps the detail filmstrip thumbnails uniformly compact', () => {
+    assert.equal(DEFAULT_FILMSTRIP_THUMBNAIL_HEIGHT, 80);
+    assert.equal(ACTIVE_FILMSTRIP_THUMBNAIL_HEIGHT, 80);
+  });
+
   it('restores inactive filmstrip thumbnails to full color on hover', () => {
     const inactiveClass = getFilmstripImageToneClass(false);
 
     assert.match(inactiveClass, /\bgrayscale\b/);
     assert.match(inactiveClass, /\bgroup-hover:grayscale-0\b/);
     assert.match(inactiveClass, /\bgroup-hover:brightness-105\b/);
+    assert.doesNotMatch(inactiveClass, /\bopacity-\[/);
     assert.doesNotMatch(getFilmstripImageToneClass(true), /\bgrayscale\b/);
   });
 

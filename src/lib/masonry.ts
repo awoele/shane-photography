@@ -5,6 +5,12 @@ export type MasonryColumn = {
   score: number;
 };
 
+export const getMasonryColumnKey = (columnIndex: number) =>
+  `masonry-column-${Math.max(0, Math.floor(columnIndex))}`;
+
+export const normalizeMasonryContainerWidth = (width: number) =>
+  Math.max(0, Math.round(width));
+
 const getPhotoHeightScore = (photo: Photo) => {
   if (photo.width <= 0 || photo.height <= 0) {
     return 0.75;
@@ -23,11 +29,11 @@ export const getMasonryColumnCount = (
 
   let targetCount = 2;
 
-  if (containerWidth >= 1680) {
+  if (containerWidth >= 1280) {
     targetCount = 6;
-  } else if (containerWidth >= 1280) {
-    targetCount = 5;
   } else if (containerWidth >= 1024) {
+    targetCount = 5;
+  } else if (containerWidth >= 768) {
     targetCount = 4;
   } else if (containerWidth >= 640) {
     targetCount = 3;
