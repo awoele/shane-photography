@@ -1310,9 +1310,31 @@ const AdminPage: NextPage<AdminPageProps> = ({
       bottom: item.bottom + scrollDelta,
       top: item.top + scrollDelta,
     }));
+    const activeId = sortDragIdRef.current || sortDragId;
+    const activeItem = items.find((item) => item.id === activeId);
+    const pointerStart = sortPointerStartRef.current;
+
+    if (
+      !sortLastTargetRef.current &&
+      pointerStart &&
+      Math.hypot(pointerX - pointerStart.x, pointerY - pointerStart.y) < 16
+    ) {
+      return;
+    }
+
+    if (
+      !sortLastTargetRef.current &&
+      activeItem &&
+      pointerX >= activeItem.left &&
+      pointerX <= activeItem.right &&
+      pointerY >= activeItem.top &&
+      pointerY <= activeItem.bottom
+    ) {
+      return;
+    }
 
     const target = getGridSortPointerTarget({
-      activeId: sortDragIdRef.current || sortDragId,
+      activeId,
       items,
       pointerX,
       pointerY,
