@@ -728,8 +728,23 @@ const AdminPage: NextPage<AdminPageProps> = ({
   const [sortCategory, setSortCategory] = useState<string>(CATEGORIES[0]);
   const [sortDraftIds, setSortDraftIds] = useState<string[]>([]);
   const [sortDragId, setSortDragId] = useState('');
+  const [sortDragPosition, setSortDragPosition] = useState<{
+    x: number;
+    y: number;
+  } | null>(null);
   const sortDragIdRef = useRef('');
   const sortPressTimerRef = useRef<number | null>(null);
+  const sortPointerItemsRef = useRef<
+    Array<{
+      bottom: number;
+      id: string;
+      left: number;
+      right: number;
+      top: number;
+    }>
+  >([]);
+  const sortPointerScrollYRef = useRef(0);
+  const sortLastTargetRef = useRef('');
   const sortPointerStartRef = useRef<{
     id: string;
     pointerId: number;
@@ -797,6 +812,10 @@ const AdminPage: NextPage<AdminPageProps> = ({
         .map((id) => sortPhotosById.get(id))
         .filter((photo): photo is CmsPhoto => Boolean(photo)),
     [sortDraftIds, sortPhotosById],
+  );
+  const draggedSortPhoto = useMemo(
+    () => (sortDragId ? sortPhotosById.get(sortDragId) : undefined),
+    [sortDragId, sortPhotosById],
   );
   const canonicalSortIds = useMemo(
     () => sortCategoryPhotos.map((photo) => photo.id),
@@ -1171,6 +1190,21 @@ const AdminPage: NextPage<AdminPageProps> = ({
     setSortDragId(photoId);
   };
 
+  const getSortPointerItems = () =>
+    Array.from(document.querySelectorAll<HTMLElement>('[data-sort-photo-id]'))
+      .map((item) => {
+        const rect = item.getBoundingClientRect();
+
+        return {
+          bottom: rect.bottom,
+          id: item.dataset.sortPhotoId ?? '',
+          left: rect.left,
+          right: rect.right,
+          top: rect.top,
+        };
+      })
+      .filter((item) => item.id);
+
   const reorderSortDraft = (
     targetId: string,
     placement: 'after' | 'before' = 'before',
@@ -1206,15 +1240,33 @@ const AdminPage: NextPage<AdminPageProps> = ({
       y: event.clientY,
     };
 
+    const {
+      clientX: pointerX,
+      clientY: pointerY,
+      currentTarget: element,
+      pointerId,
+    } = event;
+
     const beginDrag = () => {
+      if (
+        sortPointerStartRef.current?.pointerId !== pointerId ||
+        !sortPointerStartRef.current
+      ) {
+        return;
+      }
+
       sortPressTimerRef.current = null;
       event.preventDefault();
       try {
-        event.currentTarget.setPointerCapture(event.pointerId);
+        element.setPointerCapture(pointerId);
       } catch (_error) {
         // The pointer may have ended before a long press timer fired.
       }
       setActiveSortDragId(photoId);
+      setSortDragPosition({ x: pointerX, y: pointerY });
+      sortPointerItemsRef.current = getSortPointerItems();
+      sortPointerScrollYRef.current = window.scrollY;
+      sortLastTargetRef.current = '';
     };
 
     if (event.pointerType === 'mouse') {
@@ -1232,6 +1284,9 @@ const AdminPage: NextPage<AdminPageProps> = ({
     }
 
     sortPointerStartRef.current = null;
+    sortPointerItemsRef.current = [];
+    sortPointerScrollYRef.current = 0;
+    sortLastTargetRef.current = '';
   };
 
   const scrollSortListNearViewportEdge = (pointerY: number) => {
@@ -1249,30 +1304,28 @@ const AdminPage: NextPage<AdminPageProps> = ({
   };
 
   const moveSortDragToPointer = (pointerX: number, pointerY: number) => {
-    const rows = Array.from(
-      document.querySelectorAll<HTMLElement>('[data-sort-photo-id]'),
-    )
-      .map((row) => {
-        const rect = row.getBoundingClientRect();
-
-        return {
-          bottom: rect.bottom,
-          id: row.dataset.sortPhotoId ?? '',
-          left: rect.left,
-          right: rect.right,
-          top: rect.top,
-        };
-      })
-      .filter((row) => row.id);
+    const scrollDelta = window.scrollY - sortPointerScrollYRef.current;
+    const items = sortPointerItemsRef.current.map((item) => ({
+      ...item,
+      bottom: item.bottom + scrollDelta,
+      top: item.top + scrollDelta,
+    }));
 
     const target = getGridSortPointerTarget({
       activeId: sortDragIdRef.current || sortDragId,
-      items: rows,
+      items,
       pointerX,
       pointerY,
     });
 
     if (target) {
+      const targetKey = `${target.targetId}:${target.placement}`;
+
+      if (targetKey === sortLastTargetRef.current) {
+        return;
+      }
+
+      sortLastTargetRef.current = targetKey;
       reorderSortDraft(target.targetId, target.placement);
     }
   };
@@ -1292,6 +1345,7 @@ const AdminPage: NextPage<AdminPageProps> = ({
     }
 
     event.preventDefault();
+    setSortDragPosition({ x: event.clientX, y: event.clientY });
     scrollSortListNearViewportEdge(event.clientY);
     moveSortDragToPointer(event.clientX, event.clientY);
   };
@@ -1303,12 +1357,14 @@ const AdminPage: NextPage<AdminPageProps> = ({
 
     clearSortPointerState();
     setActiveSortDragId('');
+    setSortDragPosition(null);
   };
 
   const resetCategorySort = () => {
     clearSortPointerState();
     setSortDraftIds(canonicalSortIds);
     setActiveSortDragId('');
+    setSortDragPosition(null);
   };
 
   const getVisibleSortDraftIds = () =>
@@ -2830,6 +2886,24 @@ const AdminPage: NextPage<AdminPageProps> = ({
           <span>{isSortDirty ? '有未保存排序' : '当前排序已保存'}</span>
         </div>
 
+        {draggedSortPhoto && sortDragPosition ? (
+          <div
+            className="pointer-events-none fixed z-[80] w-[min(42vw,180px)] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-lg border border-[#9db6b0] bg-[#17110e] shadow-2xl shadow-black/50"
+            style={{ left: sortDragPosition.x, top: sortDragPosition.y }}
+          >
+            <div className="aspect-[4/3] overflow-hidden bg-black">
+              <img
+                src={draggedSortPhoto.thumbnail || draggedSortPhoto.src}
+                alt=""
+                className="size-full object-cover"
+              />
+            </div>
+            <p className="truncate px-2 py-1.5 text-xs font-semibold text-stone-100">
+              {draggedSortPhoto.title}
+            </p>
+          </div>
+        ) : null}
+
         {sortDraftPhotos.length > 0 ? (
           <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4 sm:gap-3">
             {sortDraftPhotos.map((photo, index) => {
@@ -2847,9 +2921,10 @@ const AdminPage: NextPage<AdminPageProps> = ({
                   }
                   onPointerMove={handleSortPointerMove}
                   onPointerUp={handleSortPointerEnd}
-                  className={`group min-w-0 overflow-hidden rounded-lg border bg-white/[0.035] text-left transition touch-pan-y ${
+                  onContextMenu={(event) => event.preventDefault()}
+                  className={`group min-w-0 select-none overflow-hidden rounded-lg border bg-white/[0.035] text-left transition touch-pan-y ${
                     isDragging
-                      ? 'z-10 scale-[1.02] border-[#9db6b0] bg-[#9db6b0]/10 opacity-75 shadow-xl shadow-black/30'
+                      ? 'z-10 scale-[1.02] border-[#9db6b0] bg-[#9db6b0]/10 opacity-25 shadow-xl shadow-black/30 touch-none'
                       : 'border-white/[0.08] hover:border-[#9db6b0]/50'
                   }`}
                 >
