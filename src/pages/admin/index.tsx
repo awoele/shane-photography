@@ -1335,7 +1335,11 @@ const AdminPage: NextPage<AdminPageProps> = ({
 
     setActiveSortDragId(photoId);
     setSortDragPosition({ x: event.clientX, y: event.clientY });
-    sortDraftIdsRef.current = [...sortDraftIds];
+    sortDraftIdsRef.current = [
+      ...(sortDraftIdsRef.current.length > 0
+        ? sortDraftIdsRef.current
+        : sortDraftIds),
+    ];
     sortPointerItemsRef.current = getSortPointerItems();
     sortPointerScrollYRef.current = window.scrollY;
     sortLastTargetRef.current = '';
