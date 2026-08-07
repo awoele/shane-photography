@@ -820,6 +820,7 @@ const AdminPage: NextPage<AdminPageProps> = ({
     x: number;
     y: number;
   } | null>(null);
+  const sortPointerListenersCleanupRef = useRef<(() => void) | null>(null);
   const [uploadPassword, setUploadPassword] = useState('');
   const [uploadItems, setUploadItems] = useState<UploadItem[]>([]);
   const [uploadCategory, setUploadCategory] = useState('portrait');
@@ -1309,6 +1310,7 @@ const AdminPage: NextPage<AdminPageProps> = ({
     setSortDraftIds(nextIds);
   };
 
+  /* eslint-disable @typescript-eslint/no-use-before-define */
   const handleSortPointerDown = (
     event: PointerEvent<HTMLButtonElement>,
     photoId: string,
@@ -1343,9 +1345,100 @@ const AdminPage: NextPage<AdminPageProps> = ({
     sortPointerItemsRef.current = getSortPointerItems();
     sortPointerScrollYRef.current = window.scrollY;
     sortLastTargetRef.current = '';
+
+    sortPointerListenersCleanupRef.current?.();
+
+    const handleWindowPointerMove = (pointerEvent: globalThis.PointerEvent) => {
+      if (
+        pointerEvent.pointerId !== event.pointerId ||
+        !sortDragIdRef.current
+      ) {
+        return;
+      }
+
+      pointerEvent.preventDefault();
+      setSortDragPosition({
+        x: pointerEvent.clientX,
+        y: pointerEvent.clientY,
+      });
+      scrollSortListNearViewportEdge(pointerEvent.clientY);
+      moveSortDragToPointer(pointerEvent.clientX, pointerEvent.clientY);
+    };
+
+    const handleWindowPointerEnd = (pointerEvent: globalThis.PointerEvent) => {
+      if (pointerEvent.pointerId !== event.pointerId) {
+        return;
+      }
+
+      clearSortPointerState();
+      setActiveSortDragId('');
+      setSortDragPosition(null);
+    };
+
+    const handleWindowTouchMove = (touchEvent: TouchEvent) => {
+      if (!sortDragIdRef.current) {
+        return;
+      }
+
+      const touch = touchEvent.touches[0];
+
+      if (!touch) {
+        return;
+      }
+
+      touchEvent.preventDefault();
+      setSortDragPosition({ x: touch.clientX, y: touch.clientY });
+      scrollSortListNearViewportEdge(touch.clientY);
+      moveSortDragToPointer(touch.clientX, touch.clientY);
+    };
+
+    const handleWindowTouchEnd = () => {
+      if (!sortDragIdRef.current) {
+        return;
+      }
+
+      clearSortPointerState();
+      setActiveSortDragId('');
+      setSortDragPosition(null);
+    };
+
+    const cleanup = () => {
+      window.removeEventListener('pointermove', handleWindowPointerMove);
+      window.removeEventListener('pointerup', handleWindowPointerEnd);
+      window.removeEventListener('pointercancel', handleWindowPointerEnd);
+      document.removeEventListener('touchmove', handleWindowTouchMove, true);
+      document.removeEventListener('touchend', handleWindowTouchEnd, true);
+      document.removeEventListener('touchcancel', handleWindowTouchEnd, true);
+    };
+
+    sortPointerListenersCleanupRef.current = cleanup;
+    window.addEventListener('pointermove', handleWindowPointerMove, {
+      passive: false,
+    });
+    window.addEventListener('pointerup', handleWindowPointerEnd, {
+      passive: false,
+    });
+    window.addEventListener('pointercancel', handleWindowPointerEnd, {
+      passive: false,
+    });
+    document.addEventListener('touchmove', handleWindowTouchMove, {
+      capture: true,
+      passive: false,
+    });
+    document.addEventListener('touchend', handleWindowTouchEnd, {
+      capture: true,
+      passive: true,
+    });
+    document.addEventListener('touchcancel', handleWindowTouchEnd, {
+      capture: true,
+      passive: true,
+    });
   };
+  /* eslint-enable @typescript-eslint/no-use-before-define */
 
   const clearSortPointerState = () => {
+    sortPointerListenersCleanupRef.current?.();
+    sortPointerListenersCleanupRef.current = null;
     sortPointerStartRef.current = null;
     sortPointerItemsRef.current = [];
     sortPointerScrollYRef.current = 0;

@@ -96,6 +96,51 @@ type SearchDialogProps = {
   tagMode: HomeSearchTagMode;
 };
 
+type GalleryVisibilityCallback = (isNearViewport: boolean) => void;
+
+let galleryVisibilityObserver: IntersectionObserver | null = null;
+const galleryVisibilityCallbacks = new Map<
+  Element,
+  GalleryVisibilityCallback
+>();
+
+const observeGalleryCardVisibility = (
+  element: Element,
+  callback: GalleryVisibilityCallback,
+) => {
+  if (
+    typeof window === 'undefined' ||
+    typeof window.IntersectionObserver === 'undefined'
+  ) {
+    callback(true);
+    return () => undefined;
+  }
+
+  if (!galleryVisibilityObserver) {
+    galleryVisibilityObserver = new window.IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          galleryVisibilityCallbacks.get(entry.target)?.(entry.isIntersecting);
+        });
+      },
+      { rootMargin: '360px 0px' },
+    );
+  }
+
+  galleryVisibilityCallbacks.set(element, callback);
+  galleryVisibilityObserver.observe(element);
+
+  return () => {
+    galleryVisibilityCallbacks.delete(element);
+    galleryVisibilityObserver?.unobserve(element);
+
+    if (galleryVisibilityCallbacks.size === 0) {
+      galleryVisibilityObserver?.disconnect();
+      galleryVisibilityObserver = null;
+    }
+  };
+};
+
 const INITIAL_GALLERY_WIDTH = 1920;
 const PROOF_IMAGE_SIZES =
   '(max-width: 640px) 50vw, (max-width: 768px) 33vw, (max-width: 1024px) 25vw, (max-width: 1280px) 20vw, 17vw';
@@ -549,21 +594,12 @@ const ProofPhotoCard = ({
       return undefined;
     }
 
-    const observer = new IntersectionObserver(
-      ([entry]) => {
-        const nextIsNearViewport = Boolean(entry?.isIntersecting);
-
-        setIsNearViewport(nextIsNearViewport);
-        if (!nextIsNearViewport) {
-          setLoaded(false);
-        }
-      },
-      { rootMargin: '900px 0px' },
-    );
-
-    observer.observe(card);
-
-    return () => observer.disconnect();
+    return observeGalleryCardVisibility(card, (nextIsNearViewport) => {
+      setIsNearViewport(nextIsNearViewport);
+      if (!nextIsNearViewport) {
+        setLoaded(false);
+      }
+    });
   }, [eager]);
 
   const syncLoadedImageState = useCallback(() => {

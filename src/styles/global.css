@@ -79,6 +79,13 @@ select {
   pointer-events: none;
 }
 
+@media (max-width: 767px) {
+  .proof-photo-card {
+    content-visibility: auto;
+    contain-intrinsic-size: auto 420px;
+  }
+}
+
 @media (hover: hover) and (pointer: fine) {
   .proof-photo-card {
     content-visibility: visible;
