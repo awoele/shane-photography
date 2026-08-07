@@ -35,6 +35,7 @@ export const config = {
       sizeLimit: '1mb',
     },
   },
+  maxDuration: 300,
 };
 
 const readResponseDetail = async (response: Response) => {

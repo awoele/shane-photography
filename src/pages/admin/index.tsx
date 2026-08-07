@@ -2006,7 +2006,14 @@ const AdminPage: NextPage<AdminPageProps> = ({
         setMessage(`已处理 ${processed}/${scanned} 张照片。`);
       }
       setCanProcessIncoming(false);
-      await Promise.all([refreshJobs(), refreshPhotos()]);
+      setIsProcessingIncoming(false);
+      Promise.all([refreshJobs(), refreshPhotos()]).catch((refreshError) => {
+        setError(
+          refreshError instanceof Error
+            ? `处理已完成，但刷新后台列表失败：${refreshError.message}`
+            : '处理已完成，但后台列表刷新失败。',
+        );
+      });
     } catch (processError) {
       setError(
         processError instanceof Error
