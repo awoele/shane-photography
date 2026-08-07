@@ -2949,22 +2949,13 @@ const AdminPage: NextPage<AdminPageProps> = ({
               const isDragging = sortDragId === photo.id;
 
               return (
-                <button
-                  type="button"
+                <div
                   key={photo.id}
                   data-sort-photo-id={photo.id}
-                  aria-label={`按住拖动排序 ${photo.title}`}
-                  onPointerCancel={handleSortPointerEnd}
-                  onPointerDown={(event) =>
-                    handleSortPointerDown(event, photo.id)
-                  }
-                  onPointerMove={handleSortPointerMove}
-                  onPointerUp={handleSortPointerEnd}
                   onContextMenu={(event) => event.preventDefault()}
-                  onDragStart={(event) => event.preventDefault()}
-                  className={`group min-w-0 select-none overflow-hidden rounded-lg border bg-white/[0.035] text-left transition touch-pan-y [-webkit-touch-callout:none] ${
+                  className={`group relative min-w-0 select-none overflow-hidden rounded-lg border bg-white/[0.035] text-left transition ${
                     isDragging
-                      ? 'z-10 scale-[1.02] border-[#9db6b0] bg-[#9db6b0]/10 opacity-25 shadow-xl shadow-black/30 touch-none'
+                      ? 'z-10 scale-[1.02] border-[#9db6b0] bg-[#9db6b0]/10 opacity-25 shadow-xl shadow-black/30'
                       : 'border-white/[0.08] hover:border-[#9db6b0]/50'
                   }`}
                 >
@@ -2981,10 +2972,36 @@ const AdminPage: NextPage<AdminPageProps> = ({
                       {index + 1}
                     </span>
                   </div>
-                  <p className="truncate px-2 py-2 text-xs font-semibold text-stone-100 sm:text-sm">
+                  <p className="truncate px-2 py-2 pr-10 text-xs font-semibold text-stone-100 sm:text-sm">
                     {photo.title}
                   </p>
-                </button>
+                  <button
+                    type="button"
+                    aria-label={`拖动排序 ${photo.title}`}
+                    title="拖动排序"
+                    onPointerCancel={handleSortPointerEnd}
+                    onPointerDown={(event) =>
+                      handleSortPointerDown(event, photo.id)
+                    }
+                    onPointerMove={handleSortPointerMove}
+                    onPointerUp={handleSortPointerEnd}
+                    onContextMenu={(event) => event.preventDefault()}
+                    onDragStart={(event) => event.preventDefault()}
+                    className="absolute bottom-1.5 right-1.5 grid size-7 touch-none select-none place-items-center rounded-md bg-black/45 text-stone-300 opacity-80 ring-1 ring-white/10 transition hover:bg-black/65 hover:text-stone-100 active:cursor-grabbing"
+                  >
+                    <span
+                      aria-hidden="true"
+                      className="grid grid-cols-2 gap-0.5"
+                    >
+                      <i className="size-1 rounded-full bg-current" />
+                      <i className="size-1 rounded-full bg-current" />
+                      <i className="size-1 rounded-full bg-current" />
+                      <i className="size-1 rounded-full bg-current" />
+                      <i className="size-1 rounded-full bg-current" />
+                      <i className="size-1 rounded-full bg-current" />
+                    </span>
+                  </button>
+                </div>
               );
             })}
           </div>
