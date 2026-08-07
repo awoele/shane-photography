@@ -9,6 +9,7 @@ import {
 type ImportReviewResponse =
   | {
       archived?: string[];
+      deleted?: string[];
       snapshot?: ImportReviewSnapshot;
     }
   | {
@@ -25,6 +26,12 @@ type FunctionListResponse = {
 type FunctionArchiveResponse = {
   archived?: string[];
   archivedCount?: number;
+  error?: string;
+};
+
+type FunctionDeleteResponse = {
+  deleted?: string[];
+  deletedCount?: number;
   error?: string;
 };
 
@@ -162,7 +169,7 @@ const handler = async (
     const action =
       typeof record.action === 'string' ? record.action.trim() : '';
 
-    if (action !== 'archive') {
+    if (action !== 'archive' && action !== 'delete') {
       response.status(400).json({ error: '不支持的导入确认操作。' });
       return;
     }
@@ -174,15 +181,18 @@ const handler = async (
       return;
     }
 
-    const archiveResult = await callProcessFunction<FunctionArchiveResponse>({
-      importReviewAction: 'archive',
+    const archiveResult = await callProcessFunction<
+      FunctionArchiveResponse & FunctionDeleteResponse
+    >({
+      importReviewAction: action,
       objectPaths,
     });
 
     if (!archiveResult.ok) {
       response.status(archiveResult.status ?? 502).json({
         detail: archiveResult.detail,
-        error: '无法归档待导入对象。',
+        error:
+          action === 'delete' ? '无法删除已上传对象。' : '无法归档待导入对象。',
         status: archiveResult.status,
       });
       return;
@@ -202,14 +212,18 @@ const handler = async (
     if (!snapshotResult.ok) {
       response.setHeader('Cache-Control', 'no-store, max-age=0');
       response.status(200).json({
-        archived: archiveResult.body.archived ?? [],
+        ...(action === 'delete'
+          ? { deleted: archiveResult.body.deleted ?? [] }
+          : { archived: archiveResult.body.archived ?? [] }),
       });
       return;
     }
 
     response.setHeader('Cache-Control', 'no-store, max-age=0');
     response.status(200).json({
-      archived: archiveResult.body.archived ?? [],
+      ...(action === 'delete'
+        ? { deleted: archiveResult.body.deleted ?? [] }
+        : { archived: archiveResult.body.archived ?? [] }),
       snapshot: snapshotResult.snapshot,
     });
   } catch (error) {

@@ -918,6 +918,27 @@ const archiveImportReviewObjects = async (incomingBucket, objectPaths) => {
   return archived;
 };
 
+const deleteImportReviewObjects = async (incomingBucket, objectPaths) => {
+  const deleted = [];
+
+  for (const objectPath of normalizeImportReviewObjectPaths(objectPaths)) {
+    const file = incomingBucket.file(objectPath);
+    // eslint-disable-next-line no-await-in-loop
+    const [exists] = await file.exists();
+
+    if (!exists) {
+      // eslint-disable-next-line no-continue
+      continue;
+    }
+
+    // eslint-disable-next-line no-await-in-loop
+    await file.delete({ ignoreNotFound: true });
+    deleted.push(objectPath);
+  }
+
+  return deleted;
+};
+
 const handleImportReviewAction = async ({ body, incomingBucket, res }) => {
   const importReviewAction = toCleanString(body.importReviewAction);
 
@@ -935,6 +956,16 @@ const handleImportReviewAction = async ({ body, incomingBucket, res }) => {
     );
 
     res.status(200).json({ archived, archivedCount: archived.length });
+    return;
+  }
+
+  if (importReviewAction === 'delete') {
+    const deleted = await deleteImportReviewObjects(
+      incomingBucket,
+      body.objectPaths,
+    );
+
+    res.status(200).json({ deleted, deletedCount: deleted.length });
     return;
   }
 

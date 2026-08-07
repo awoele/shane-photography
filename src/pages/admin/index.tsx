@@ -84,6 +84,7 @@ type UploadItem = {
   file: File;
   id: string;
   livePhotoPairKey: string;
+  metadataPath: string;
   objectPath: string;
   previewUrl: string;
   progress: number;
@@ -665,6 +666,74 @@ const uploadFileThroughSiteProxy = async ({
   onProgress(100);
 };
 
+const uploadFileToSignedUrl = async ({
+  contentType,
+  file,
+  onProgress,
+  signedUrl,
+}: {
+  contentType: string;
+  file: File;
+  onProgress: (progress: number) => void;
+  signedUrl: string;
+}) =>
+  new Promise<void>((resolve, reject) => {
+    const request = new XMLHttpRequest();
+
+    request.open('PUT', signedUrl);
+    request.setRequestHeader('Content-Type', contentType);
+    request.upload.onprogress = (event) => {
+      if (event.lengthComputable) {
+        onProgress(Math.round((event.loaded / event.total) * 100));
+      }
+    };
+    request.onerror = () => reject(new Error('直传连接失败。'));
+    request.ontimeout = () => reject(new Error('直传请求超时。'));
+    request.onload = () => {
+      if (request.status >= 200 && request.status < 300) {
+        onProgress(100);
+        resolve();
+        return;
+      }
+
+      reject(new Error(`直传失败，状态码 ${request.status}。`));
+    };
+    request.send(file);
+  });
+
+const uploadFileWithFallback = async ({
+  contentType,
+  file,
+  objectPath,
+  onProgress,
+  password,
+  signedUrl,
+}: {
+  contentType: string;
+  file: File;
+  objectPath: string;
+  onProgress: (progress: number) => void;
+  password: string;
+  signedUrl: string;
+}) => {
+  try {
+    await uploadFileToSignedUrl({
+      contentType,
+      file,
+      onProgress,
+      signedUrl,
+    });
+  } catch (_directUploadError) {
+    await uploadFileThroughSiteProxy({
+      contentType,
+      file,
+      objectPath,
+      onProgress,
+      password,
+    });
+  }
+};
+
 const StatPanel = ({ label, value }: { label: string; value: ReactNode }) => (
   <div className="min-w-0 rounded-lg border border-white/[0.07] bg-white/[0.04] p-3 sm:p-4">
     <p className="truncate text-xs text-stone-400 sm:text-sm">{label}</p>
@@ -766,6 +835,7 @@ const AdminPage: NextPage<AdminPageProps> = ({
   );
   const [selectedImportPaths, setSelectedImportPaths] = useState<string[]>([]);
   const [isUploading, setIsUploading] = useState(false);
+  const [retryingUploadId, setRetryingUploadId] = useState('');
   const [isProcessingIncoming, setIsProcessingIncoming] = useState(false);
   const [isLoadingImportReview, setIsLoadingImportReview] = useState(false);
   const [isArchivingImports, setIsArchivingImports] = useState(false);
@@ -1165,6 +1235,7 @@ const AdminPage: NextPage<AdminPageProps> = ({
           file,
           id: `${file.name}-${file.size}-${file.lastModified}-${index}`,
           livePhotoPairKey: getUploadPairKey(file.name),
+          metadataPath: '',
           objectPath: '',
           previewUrl: URL.createObjectURL(file),
           progress: 0,
@@ -1807,6 +1878,88 @@ const AdminPage: NextPage<AdminPageProps> = ({
     }
   };
 
+  const uploadOneItem = async ({
+    batchId,
+    batchIndex,
+    item,
+    passwordValue,
+  }: {
+    batchId: string;
+    batchIndex: number;
+    item: UploadItem;
+    passwordValue: string;
+  }) => {
+    const contentType = inferContentType(item.file);
+    const livePhotoPairKey = isLivePhotoPaired(item, uploadItems)
+      ? item.livePhotoPairKey
+      : '';
+    const response = await fetch('/api/create-upload-url/', {
+      body: JSON.stringify({
+        batchId,
+        batchIndex,
+        category: uploadCategory,
+        contentType,
+        description: uploadDescription,
+        filename: item.file.name,
+        livePhotoPairKey,
+        location: uploadLocation,
+        password: passwordValue,
+        role: item.role,
+        title: item.title,
+      }),
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      method: 'POST',
+    });
+
+    if (!response.ok) {
+      throw new Error(await getErrorMessage(response));
+    }
+
+    const data = (await response.json()) as UploadUrlResponse;
+
+    if ('error' in data) {
+      throw new Error(data.error);
+    }
+
+    await uploadFileWithFallback({
+      contentType,
+      file: item.file,
+      objectPath: data.objectPath,
+      onProgress: (progress) => updateUploadItems(item.id, { progress }),
+      password: passwordValue,
+      signedUrl: data.signedUrl,
+    });
+
+    if (item.role === 'image') {
+      await registerProcessingJob(item, data.objectPath);
+    }
+
+    return data;
+  };
+
+  const deleteUploadedObjects = async (objectPaths: string[]) => {
+    const paths = Array.from(new Set(objectPaths.filter(Boolean)));
+
+    if (paths.length === 0) {
+      return;
+    }
+
+    const response = await fetch('/api/admin/import-review/', {
+      body: JSON.stringify({ action: 'delete', objectPaths: paths }),
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      method: 'POST',
+    });
+    const data = (await response.json()) as ImportReviewResponse;
+
+    if (!response.ok || data.error) {
+      throw new Error(data.error || '无法删除已上传文件。');
+    }
+  };
+
   const processIncoming = async (
     passwordValue = uploadPassword.trim(),
     objectPaths = uploadedObjectPaths,
@@ -1935,6 +2088,7 @@ const AdminPage: NextPage<AdminPageProps> = ({
     const uploadPlan = uploadItems.map((item) => ({
       ...item,
       error: '',
+      metadataPath: '',
       objectPath: '',
       progress: 0,
       status: 'waiting' as UploadItemStatus,
@@ -1995,12 +2149,13 @@ const AdminPage: NextPage<AdminPageProps> = ({
         const updateItemProgress = (progress: number) =>
           updateUploadItems(item.id, { progress });
 
-        await uploadFileThroughSiteProxy({
+        await uploadFileWithFallback({
           contentType,
           file: item.file,
           objectPath: data.objectPath,
           onProgress: updateItemProgress,
           password: passwordValue,
+          signedUrl: data.signedUrl,
         });
 
         successfulFileCount += 1;
@@ -2011,6 +2166,7 @@ const AdminPage: NextPage<AdminPageProps> = ({
         }
 
         updateUploadItems(item.id, {
+          metadataPath: data.metadataPath,
           objectPath: data.objectPath,
           progress: 100,
           status: 'success',
@@ -2046,6 +2202,107 @@ const AdminPage: NextPage<AdminPageProps> = ({
     if (autoProcess) {
       setActiveModule('review');
       await refreshImportReview({ selectRecommended: true });
+    }
+  };
+
+  const retryUploadItem = async (id: string) => {
+    const item = uploadItems.find((currentItem) => currentItem.id === id);
+    const passwordValue = uploadPassword.trim();
+
+    if (!item || item.status !== 'failed' || retryingUploadId) {
+      return;
+    }
+
+    if (!passwordValue) {
+      setError('请输入后台密码后再重试上传。');
+      return;
+    }
+
+    setRetryingUploadId(id);
+    setError('');
+    setMessage(`正在重试上传 ${item.file.name}...`);
+    updateUploadItems(id, {
+      error: '',
+      progress: 0,
+      status: 'uploading',
+    });
+
+    try {
+      if (item.objectPath || item.metadataPath) {
+        await deleteUploadedObjects([item.objectPath, item.metadataPath]);
+      }
+
+      const data = await uploadOneItem({
+        batchId: createBatchId(),
+        batchIndex: 1,
+        item,
+        passwordValue,
+      });
+
+      updateUploadItems(id, {
+        error: '',
+        metadataPath: data.metadataPath,
+        objectPath: data.objectPath,
+        progress: 100,
+        status: 'success',
+      });
+      if (item.role === 'image') {
+        setUploadedObjectPaths((currentPaths) =>
+          Array.from(new Set([...currentPaths, data.objectPath])),
+        );
+        setCanProcessIncoming(true);
+      }
+      await refreshJobs();
+      setMessage(`已重新上传 ${item.file.name}。`);
+    } catch (retryError) {
+      updateUploadItems(id, {
+        error:
+          retryError instanceof Error
+            ? retryError.message
+            : '上传失败，请重试。',
+        status: 'failed',
+      });
+      setError(`重试失败：${item.file.name}`);
+    } finally {
+      setRetryingUploadId('');
+    }
+  };
+
+  const removeUploadItem = async (id: string) => {
+    const item = uploadItems.find((currentItem) => currentItem.id === id);
+
+    if (
+      !item ||
+      isUploading ||
+      item.status === 'uploading' ||
+      retryingUploadId
+    ) {
+      return;
+    }
+
+    setError('');
+
+    try {
+      await deleteUploadedObjects([item.objectPath, item.metadataPath]);
+      URL.revokeObjectURL(item.previewUrl);
+      setUploadItems((currentItems) =>
+        currentItems.filter((currentItem) => currentItem.id !== id),
+      );
+      setUploadedObjectPaths((currentPaths) =>
+        currentPaths.filter((path) => path !== item.objectPath),
+      );
+      setSelectedImportPaths((currentPaths) =>
+        currentPaths.filter(
+          (path) => path !== item.objectPath && path !== item.metadataPath,
+        ),
+      );
+      setMessage(`已删除上传项 ${item.file.name}。`);
+    } catch (deleteError) {
+      setError(
+        deleteError instanceof Error
+          ? deleteError.message
+          : '无法删除这张上传照片。',
+      );
     }
   };
 
@@ -2632,6 +2889,34 @@ const AdminPage: NextPage<AdminPageProps> = ({
                             {item.error}
                           </p>
                         ) : null}
+                        <div className="flex items-center justify-end gap-2 pt-1">
+                          {item.status === 'failed' ? (
+                            <button
+                              type="button"
+                              onClick={() => retryUploadItem(item.id)}
+                              disabled={
+                                isUploading || Boolean(retryingUploadId)
+                              }
+                              className="rounded-full px-3 py-1 text-xs font-semibold text-[#c5dfd8] ring-1 ring-[#9db6b0]/40 transition hover:bg-[#9db6b0]/10 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              {retryingUploadId === item.id
+                                ? '重试中...'
+                                : '重试上传'}
+                            </button>
+                          ) : null}
+                          <button
+                            type="button"
+                            onClick={() => removeUploadItem(item.id)}
+                            disabled={
+                              isUploading ||
+                              item.status === 'uploading' ||
+                              Boolean(retryingUploadId)
+                            }
+                            className="rounded-full px-3 py-1 text-xs text-stone-400 ring-1 ring-white/[0.1] transition hover:bg-red-400/10 hover:text-red-200 disabled:cursor-not-allowed disabled:opacity-40"
+                          >
+                            删除
+                          </button>
+                        </div>
                       </div>
                     </article>
                   );
