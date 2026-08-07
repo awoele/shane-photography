@@ -745,6 +745,7 @@ const AdminPage: NextPage<AdminPageProps> = ({
   >([]);
   const sortPointerScrollYRef = useRef(0);
   const sortLastTargetRef = useRef('');
+  const sortDragBaseIdsRef = useRef<string[]>([]);
   const sortPointerStartRef = useRef<{
     id: string;
     pointerId: number;
@@ -1210,18 +1211,24 @@ const AdminPage: NextPage<AdminPageProps> = ({
     placement: 'after' | 'before' = 'before',
   ) => {
     const activeId = sortDragIdRef.current || sortDragId;
+    const baseIds = sortDragBaseIdsRef.current;
 
     if (!activeId || activeId === targetId) {
       return;
     }
 
+    const nextIds = movePhotoIdBeforeTarget({
+      activeId,
+      ids: baseIds.length > 0 ? baseIds : sortDraftIds,
+      placement,
+      targetId,
+    });
+
     setSortDraftIds((current) =>
-      movePhotoIdBeforeTarget({
-        activeId,
-        ids: current,
-        placement,
-        targetId,
-      }),
+      current.length === nextIds.length &&
+      current.every((id, index) => id === nextIds[index])
+        ? current
+        : nextIds,
     );
   };
 
@@ -1264,6 +1271,7 @@ const AdminPage: NextPage<AdminPageProps> = ({
       }
       setActiveSortDragId(photoId);
       setSortDragPosition({ x: pointerX, y: pointerY });
+      sortDragBaseIdsRef.current = [...sortDraftIds];
       sortPointerItemsRef.current = getSortPointerItems();
       sortPointerScrollYRef.current = window.scrollY;
       sortLastTargetRef.current = '';
@@ -1287,6 +1295,7 @@ const AdminPage: NextPage<AdminPageProps> = ({
     sortPointerItemsRef.current = [];
     sortPointerScrollYRef.current = 0;
     sortLastTargetRef.current = '';
+    sortDragBaseIdsRef.current = [];
   };
 
   const scrollSortListNearViewportEdge = (pointerY: number) => {
@@ -1323,13 +1332,20 @@ const AdminPage: NextPage<AdminPageProps> = ({
     }
 
     if (
-      !sortLastTargetRef.current &&
       activeItem &&
       pointerX >= activeItem.left &&
       pointerX <= activeItem.right &&
       pointerY >= activeItem.top &&
       pointerY <= activeItem.bottom
     ) {
+      if (sortDragBaseIdsRef.current.length > 0) {
+        setSortDraftIds((current) =>
+          current.every((id, index) => id === sortDragBaseIdsRef.current[index])
+            ? current
+            : [...sortDragBaseIdsRef.current],
+        );
+      }
+      sortLastTargetRef.current = '';
       return;
     }
 
