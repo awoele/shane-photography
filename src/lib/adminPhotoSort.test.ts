@@ -6,6 +6,8 @@ import {
   getGridSortPointerTarget,
   getVerticalSortPointerTarget,
   movePhotoIdBeforeTarget,
+  movePhotoIdsToFront,
+  movePhotoIdsToPosition,
 } from './adminPhotoSort';
 
 test('movePhotoIdBeforeTarget moves an item forward', () => {
@@ -52,6 +54,27 @@ test('movePhotoIdBeforeTarget keeps order when ids are missing', () => {
       targetId: 'b',
     }),
     ids,
+  );
+});
+
+test('movePhotoIdsToPosition keeps selected ids together in their current order', () => {
+  assert.deepEqual(
+    movePhotoIdsToPosition({
+      ids: ['a', 'b', 'c', 'd', 'e'],
+      selectedIds: ['d', 'b'],
+      targetIndex: 1,
+    }),
+    ['a', 'b', 'd', 'c', 'e'],
+  );
+});
+
+test('movePhotoIdsToFront moves a selected group to the beginning', () => {
+  assert.deepEqual(
+    movePhotoIdsToFront({
+      ids: ['a', 'b', 'c', 'd'],
+      selectedIds: ['c', 'a'],
+    }),
+    ['a', 'c', 'b', 'd'],
   );
 });
 

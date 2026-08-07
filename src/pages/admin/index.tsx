@@ -15,6 +15,8 @@ import {
   applySavedSortOrderToPhotos,
   getGridSortPointerTarget,
   movePhotoIdBeforeTarget,
+  movePhotoIdsToFront,
+  movePhotoIdsToPosition,
 } from '@/lib/adminPhotoSort';
 import { comparePhotosByManagedOrder, formatCategoryLabel } from '@/lib/photos';
 import type {
@@ -796,6 +798,8 @@ const AdminPage: NextPage<AdminPageProps> = ({
   const [bulkTitleStart, setBulkTitleStart] = useState('1');
   const [sortCategory, setSortCategory] = useState<string>(CATEGORIES[0]);
   const [sortDraftIds, setSortDraftIds] = useState<string[]>([]);
+  const [sortSelectedIds, setSortSelectedIds] = useState<string[]>([]);
+  const [sortMovePosition, setSortMovePosition] = useState('1');
   const [sortDragId, setSortDragId] = useState('');
   const [sortDragPosition, setSortDragPosition] = useState<{
     x: number;
@@ -883,6 +887,10 @@ const AdminPage: NextPage<AdminPageProps> = ({
         .map((id) => sortPhotosById.get(id))
         .filter((photo): photo is CmsPhoto => Boolean(photo)),
     [sortDraftIds, sortPhotosById],
+  );
+  const sortSelectedSet = useMemo(
+    () => new Set(sortSelectedIds),
+    [sortSelectedIds],
   );
   const draggedSortPhoto = useMemo(
     () => (sortDragId ? sortPhotosById.get(sortDragId) : undefined),
@@ -1192,6 +1200,7 @@ const AdminPage: NextPage<AdminPageProps> = ({
   useEffect(() => {
     setSortDraftIds(canonicalSortIds);
     sortDraftIdsRef.current = canonicalSortIds;
+    setSortSelectedIds([]);
     sortDragIdRef.current = '';
     setSortDragId('');
   }, [canonicalSortIds, sortCategory]);
@@ -1539,8 +1548,85 @@ const AdminPage: NextPage<AdminPageProps> = ({
     clearSortPointerState();
     setSortDraftIds(canonicalSortIds);
     sortDraftIdsRef.current = canonicalSortIds;
+    setSortSelectedIds([]);
     setActiveSortDragId('');
     setSortDragPosition(null);
+  };
+
+  const toggleSortSelection = (photoId: string) => {
+    setSortSelectedIds((currentIds) =>
+      currentIds.includes(photoId)
+        ? currentIds.filter((id) => id !== photoId)
+        : [...currentIds, photoId],
+    );
+  };
+
+  const toggleAllSortSelection = () => {
+    setSortSelectedIds((currentIds) =>
+      currentIds.length === sortDraftIds.length ? [] : [...sortDraftIds],
+    );
+  };
+
+  const applySortDraft = (nextIds: string[], nextMessage: string) => {
+    sortDraftIdsRef.current = nextIds;
+    setSortDraftIds(nextIds);
+    setMessage(nextMessage);
+    setError('');
+  };
+
+  const moveSelectedSortPhotos = () => {
+    const currentIds =
+      sortDraftIdsRef.current.length > 0
+        ? sortDraftIdsRef.current
+        : sortDraftIds;
+    const selectedSortIds = sortSelectedIds.filter((id) =>
+      currentIds.includes(id),
+    );
+    const requestedPosition = Number.parseInt(sortMovePosition, 10);
+
+    if (selectedSortIds.length === 0) {
+      setError('请先选择要移动的照片。');
+      return;
+    }
+
+    if (!Number.isFinite(requestedPosition)) {
+      setError('请输入有效的目标位置。');
+      return;
+    }
+
+    const nextIds = movePhotoIdsToPosition({
+      ids: currentIds,
+      selectedIds: selectedSortIds,
+      targetIndex: requestedPosition - 1,
+    });
+
+    applySortDraft(
+      nextIds,
+      `已将 ${selectedSortIds.length} 张照片移动到第 ${Math.max(
+        1,
+        Math.min(requestedPosition, nextIds.length),
+      )} 位附近，请保存排序。`,
+    );
+  };
+
+  const pinSelectedSortPhotos = () => {
+    const currentIds =
+      sortDraftIdsRef.current.length > 0
+        ? sortDraftIdsRef.current
+        : sortDraftIds;
+    const selectedSortIds = sortSelectedIds.filter((id) =>
+      currentIds.includes(id),
+    );
+
+    if (selectedSortIds.length === 0) {
+      setError('请先选择要置顶的照片。');
+      return;
+    }
+
+    applySortDraft(
+      movePhotoIdsToFront({ ids: currentIds, selectedIds: selectedSortIds }),
+      `已将 ${selectedSortIds.length} 张照片置顶，请保存排序。`,
+    );
   };
 
   const getVisibleSortDraftIds = () =>
@@ -3271,6 +3357,59 @@ const AdminPage: NextPage<AdminPageProps> = ({
               {isSaving ? '保存中...' : '保存排序'}
             </button>
           </div>
+          <div className="mt-3 grid gap-2 rounded-md border border-white/[0.07] bg-white/[0.025] p-2 sm:grid-cols-[auto_auto_auto_120px_auto_auto] sm:items-center">
+            <span className="text-sm text-stone-400">
+              已选 {sortSelectedIds.length} / {sortDraftIds.length}
+            </span>
+            <button
+              type="button"
+              onClick={toggleAllSortSelection}
+              disabled={sortDraftIds.length === 0}
+              className={`${buttonClassName} w-full text-stone-300 ring-1 ring-white/[0.08] hover:bg-white/[0.06] sm:w-auto`}
+            >
+              {sortDraftIds.length > 0 &&
+              sortSelectedIds.length === sortDraftIds.length
+                ? '取消全选'
+                : '选择全部'}
+            </button>
+            <button
+              type="button"
+              onClick={() => setSortSelectedIds([])}
+              disabled={sortSelectedIds.length === 0}
+              className={`${buttonClassName} w-full text-stone-300 ring-1 ring-white/[0.08] hover:bg-white/[0.06] sm:w-auto`}
+            >
+              清空选择
+            </button>
+            <input
+              type="number"
+              min={1}
+              max={sortDraftIds.length || 1}
+              value={sortMovePosition}
+              onChange={(event) =>
+                setSortMovePosition(event.currentTarget.value)
+              }
+              aria-label="移动到第几位"
+              placeholder="目标位置"
+              title="批量移动到第几位"
+              className={`${inputClassName} h-10 w-full`}
+            />
+            <button
+              type="button"
+              onClick={moveSelectedSortPhotos}
+              disabled={sortSelectedIds.length === 0}
+              className={`${buttonClassName} w-full text-stone-300 ring-1 ring-white/[0.08] hover:bg-white/[0.06] sm:w-auto`}
+            >
+              批量移动
+            </button>
+            <button
+              type="button"
+              onClick={pinSelectedSortPhotos}
+              disabled={sortSelectedIds.length === 0}
+              className={`${buttonClassName} w-full bg-[#9db6b0] text-[#17110e] hover:bg-[#b7cec8] sm:w-auto`}
+            >
+              批量置顶
+            </button>
+          </div>
         </div>
       </div>
 
@@ -3330,6 +3469,14 @@ const AdminPage: NextPage<AdminPageProps> = ({
                     <span className="absolute left-1.5 top-1.5 rounded-full bg-black/60 px-1.5 py-0.5 text-[11px] font-semibold text-stone-100 backdrop-blur">
                       {index + 1}
                     </span>
+                    <input
+                      type="checkbox"
+                      aria-label={`选择排序 ${photo.title}`}
+                      checked={sortSelectedSet.has(photo.id)}
+                      onChange={() => toggleSortSelection(photo.id)}
+                      onClick={(event) => event.stopPropagation()}
+                      className="absolute right-1.5 top-1.5 size-5 accent-[#9db6b0]"
+                    />
                   </div>
                   <p className="truncate px-2 py-2 pr-10 text-xs font-semibold text-stone-100 sm:text-sm">
                     {photo.title}

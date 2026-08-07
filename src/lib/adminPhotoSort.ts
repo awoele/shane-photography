@@ -31,6 +31,43 @@ export const movePhotoIdBeforeTarget = ({
   return nextIds;
 };
 
+export const movePhotoIdsToPosition = ({
+  ids,
+  selectedIds,
+  targetIndex,
+}: {
+  ids: string[];
+  selectedIds: string[];
+  targetIndex: number;
+}) => {
+  const selectedSet = new Set(selectedIds);
+  const movingIds = ids.filter((id) => selectedSet.has(id));
+
+  if (movingIds.length === 0) {
+    return ids;
+  }
+
+  const remainingIds = ids.filter((id) => !selectedSet.has(id));
+  const insertIndex = Math.max(
+    0,
+    Math.min(Math.floor(targetIndex), remainingIds.length),
+  );
+
+  return [
+    ...remainingIds.slice(0, insertIndex),
+    ...movingIds,
+    ...remainingIds.slice(insertIndex),
+  ];
+};
+
+export const movePhotoIdsToFront = ({
+  ids,
+  selectedIds,
+}: {
+  ids: string[];
+  selectedIds: string[];
+}) => movePhotoIdsToPosition({ ids, selectedIds, targetIndex: 0 });
+
 export type VerticalSortPointerRow = {
   bottom: number;
   id: string;
