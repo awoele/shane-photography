@@ -528,8 +528,43 @@ const ProofPhotoCard = ({
   const [imageSource, setImageSource] = useState(photo.thumbnail || photo.src);
   const [failed, setFailed] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  const [isNearViewport, setIsNearViewport] = useState(index < 4);
+  const cardRef = useRef<HTMLAnchorElement | null>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
   const eager = index < 4;
+
+  useEffect(() => {
+    if (
+      eager ||
+      typeof window === 'undefined' ||
+      !('IntersectionObserver' in window)
+    ) {
+      setIsNearViewport(true);
+      return undefined;
+    }
+
+    const card = cardRef.current;
+
+    if (!card) {
+      return undefined;
+    }
+
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        const nextIsNearViewport = Boolean(entry?.isIntersecting);
+
+        setIsNearViewport(nextIsNearViewport);
+        if (!nextIsNearViewport) {
+          setLoaded(false);
+        }
+      },
+      { rootMargin: '900px 0px' },
+    );
+
+    observer.observe(card);
+
+    return () => observer.disconnect();
+  }, [eager]);
 
   const syncLoadedImageState = useCallback(() => {
     if (isRenderableImageComplete(imageRef.current)) {
@@ -621,10 +656,11 @@ const ProofPhotoCard = ({
     <Link
       href={buildPhotoDetailHref(photo.id, returnHref)}
       prefetch={false}
+      ref={cardRef}
       onClick={handleOpenPhotoClick}
       onPointerDown={onOpenPhoto}
       onTouchStart={onOpenPhoto}
-      className="proof-photo-card group relative block w-full break-inside-avoid overflow-hidden rounded-[3px] bg-white/[0.025] text-left shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_18px_52px_rgba(0,0,0,0.22)] backdrop-blur-2xl"
+      className="proof-photo-card group relative block w-full break-inside-avoid overflow-hidden rounded-[3px] bg-white/[0.025] text-left shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_18px_52px_rgba(0,0,0,0.22)]"
       style={{
         aspectRatio: getPhotoAspectRatio(photo),
       }}
@@ -638,7 +674,7 @@ const ProofPhotoCard = ({
       >
         {photo.thumbnail ? (
           <img
-            src={photo.thumbnail}
+            src={isNearViewport ? photo.thumbnail : undefined}
             alt=""
             aria-hidden="true"
             draggable={false}
@@ -662,7 +698,7 @@ const ProofPhotoCard = ({
       {!failed ? (
         <img
           ref={setImageElement}
-          src={imageSource}
+          src={isNearViewport ? imageSource : undefined}
           alt={photo.title}
           width={photo.width || undefined}
           height={photo.height || undefined}

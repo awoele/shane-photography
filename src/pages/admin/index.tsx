@@ -802,7 +802,7 @@ const AdminPage: NextPage<AdminPageProps> = ({
     y: number;
   } | null>(null);
   const sortDragIdRef = useRef('');
-  const sortPressTimerRef = useRef<number | null>(null);
+  const sortDraftIdsRef = useRef<string[]>([]);
   const sortPointerItemsRef = useRef<
     Array<{
       bottom: number;
@@ -814,7 +814,6 @@ const AdminPage: NextPage<AdminPageProps> = ({
   >([]);
   const sortPointerScrollYRef = useRef(0);
   const sortLastTargetRef = useRef('');
-  const sortDragBaseIdsRef = useRef<string[]>([]);
   const sortPointerStartRef = useRef<{
     id: string;
     pointerId: number;
@@ -1191,6 +1190,7 @@ const AdminPage: NextPage<AdminPageProps> = ({
 
   useEffect(() => {
     setSortDraftIds(canonicalSortIds);
+    sortDraftIdsRef.current = canonicalSortIds;
     sortDragIdRef.current = '';
     setSortDragId('');
   }, [canonicalSortIds, sortCategory]);
@@ -1282,7 +1282,10 @@ const AdminPage: NextPage<AdminPageProps> = ({
     placement: 'after' | 'before' = 'before',
   ) => {
     const activeId = sortDragIdRef.current || sortDragId;
-    const baseIds = sortDragBaseIdsRef.current;
+    const currentIds =
+      sortDraftIdsRef.current.length > 0
+        ? sortDraftIdsRef.current
+        : sortDraftIds;
 
     if (!activeId || activeId === targetId) {
       return;
@@ -1290,17 +1293,20 @@ const AdminPage: NextPage<AdminPageProps> = ({
 
     const nextIds = movePhotoIdBeforeTarget({
       activeId,
-      ids: baseIds.length > 0 ? baseIds : sortDraftIds,
+      ids: currentIds,
       placement,
       targetId,
     });
 
-    setSortDraftIds((current) =>
-      current.length === nextIds.length &&
-      current.every((id, index) => id === nextIds[index])
-        ? current
-        : nextIds,
-    );
+    if (
+      currentIds.length === nextIds.length &&
+      currentIds.every((id, index) => id === nextIds[index])
+    ) {
+      return;
+    }
+
+    sortDraftIdsRef.current = nextIds;
+    setSortDraftIds(nextIds);
   };
 
   const handleSortPointerDown = (
@@ -1311,6 +1317,7 @@ const AdminPage: NextPage<AdminPageProps> = ({
       return;
     }
 
+    event.preventDefault();
     sortPointerStartRef.current = {
       id: photoId,
       pointerId: event.pointerId,
@@ -1318,55 +1325,27 @@ const AdminPage: NextPage<AdminPageProps> = ({
       y: event.clientY,
     };
 
-    const {
-      clientX: pointerX,
-      clientY: pointerY,
-      currentTarget: element,
-      pointerId,
-    } = event;
-
-    const beginDrag = () => {
-      if (
-        sortPointerStartRef.current?.pointerId !== pointerId ||
-        !sortPointerStartRef.current
-      ) {
-        return;
-      }
-
-      sortPressTimerRef.current = null;
-      event.preventDefault();
-      try {
-        element.setPointerCapture(pointerId);
-      } catch (_error) {
-        // The pointer may have ended before a long press timer fired.
-      }
-      setActiveSortDragId(photoId);
-      setSortDragPosition({ x: pointerX, y: pointerY });
-      sortDragBaseIdsRef.current = [...sortDraftIds];
-      sortPointerItemsRef.current = getSortPointerItems();
-      sortPointerScrollYRef.current = window.scrollY;
-      sortLastTargetRef.current = '';
-    };
-
-    if (event.pointerType === 'mouse') {
-      beginDrag();
-      return;
+    // Capture immediately. Waiting for a long-press timer lets mobile
+    // browsers cancel the pointer or start a native image gesture first.
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    } catch (_error) {
+      // Some embedded browsers do not expose pointer capture reliably.
     }
 
-    sortPressTimerRef.current = window.setTimeout(beginDrag, 240);
+    setActiveSortDragId(photoId);
+    setSortDragPosition({ x: event.clientX, y: event.clientY });
+    sortDraftIdsRef.current = [...sortDraftIds];
+    sortPointerItemsRef.current = getSortPointerItems();
+    sortPointerScrollYRef.current = window.scrollY;
+    sortLastTargetRef.current = '';
   };
 
   const clearSortPointerState = () => {
-    if (sortPressTimerRef.current !== null) {
-      window.clearTimeout(sortPressTimerRef.current);
-      sortPressTimerRef.current = null;
-    }
-
     sortPointerStartRef.current = null;
     sortPointerItemsRef.current = [];
     sortPointerScrollYRef.current = 0;
     sortLastTargetRef.current = '';
-    sortDragBaseIdsRef.current = [];
   };
 
   const scrollSortListNearViewportEdge = (pointerY: number) => {
@@ -1384,12 +1363,18 @@ const AdminPage: NextPage<AdminPageProps> = ({
   };
 
   const moveSortDragToPointer = (pointerX: number, pointerY: number) => {
+    // Read the live grid after each move. React may have already committed a
+    // previous reorder, so the original rectangles are not reliable targets.
+    const liveItems = getSortPointerItems();
     const scrollDelta = window.scrollY - sortPointerScrollYRef.current;
-    const items = sortPointerItemsRef.current.map((item) => ({
-      ...item,
-      bottom: item.bottom + scrollDelta,
-      top: item.top + scrollDelta,
-    }));
+    const items =
+      liveItems.length > 0
+        ? liveItems
+        : sortPointerItemsRef.current.map((item) => ({
+            ...item,
+            bottom: item.bottom + scrollDelta,
+            top: item.top + scrollDelta,
+          }));
     const activeId = sortDragIdRef.current || sortDragId;
     const activeItem = items.find((item) => item.id === activeId);
     const pointerStart = sortPointerStartRef.current;
@@ -1409,13 +1394,6 @@ const AdminPage: NextPage<AdminPageProps> = ({
       pointerY >= activeItem.top &&
       pointerY <= activeItem.bottom
     ) {
-      if (sortDragBaseIdsRef.current.length > 0) {
-        setSortDraftIds((current) =>
-          current.every((id, index) => id === sortDragBaseIdsRef.current[index])
-            ? current
-            : [...sortDragBaseIdsRef.current],
-        );
-      }
       sortLastTargetRef.current = '';
       return;
     }
@@ -1441,15 +1419,6 @@ const AdminPage: NextPage<AdminPageProps> = ({
 
   const handleSortPointerMove = (event: PointerEvent<HTMLButtonElement>) => {
     if (!sortDragIdRef.current && !sortDragId) {
-      const start = sortPointerStartRef.current;
-
-      if (
-        start &&
-        Math.hypot(event.clientX - start.x, event.clientY - start.y) > 10
-      ) {
-        clearSortPointerState();
-      }
-
       return;
     }
 
@@ -1472,6 +1441,7 @@ const AdminPage: NextPage<AdminPageProps> = ({
   const resetCategorySort = () => {
     clearSortPointerState();
     setSortDraftIds(canonicalSortIds);
+    sortDraftIdsRef.current = canonicalSortIds;
     setActiveSortDragId('');
     setSortDragPosition(null);
   };
