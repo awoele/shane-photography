@@ -27,9 +27,5 @@ export const getOrderedGalleryPhotos = ({
     return shufflePhotos(filteredPhotos, seed);
   }
 
-  if (category && category !== 'all') {
-    return [...filteredPhotos].sort(comparePhotosByManagedOrder);
-  }
-
-  return filteredPhotos;
+  return [...filteredPhotos].sort(comparePhotosByManagedOrder);
 };

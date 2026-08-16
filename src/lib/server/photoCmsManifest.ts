@@ -45,6 +45,9 @@ const shouldUseManagedCmsPhotoList = () => {
   return !process.env.PHOTO_CMS_DATA_FILE;
 };
 
+const getPhotoSetCacheTtlMs = () =>
+  shouldUseManagedCmsPhotoList() ? 0 : PUBLIC_PHOTO_SET_CACHE_TTL_MS;
+
 const getManagedPhotoSetCacheKey = () =>
   [
     process.env.PHOTO_CMS_CLOUD || '',
@@ -59,7 +62,7 @@ const isFreshPhotoSetCache = (key: string) =>
   Boolean(
     cachedPhotoSet &&
       cachedPhotoSet.key === key &&
-      Date.now() - cachedPhotoSet.timestamp < PUBLIC_PHOTO_SET_CACHE_TTL_MS,
+      Date.now() - cachedPhotoSet.timestamp < getPhotoSetCacheTtlMs(),
   );
 
 export const clearManagedPhotoSetCache = () => {

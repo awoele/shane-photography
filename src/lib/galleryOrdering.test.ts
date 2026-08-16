@@ -95,4 +95,39 @@ describe('gallery ordering', () => {
       ['portrait', 'portrait', 'portrait'],
     );
   });
+
+  it('applies managed ordering to latest view across all categories', () => {
+    const ordered = getOrderedGalleryPhotos({
+      category: 'all',
+      photos: [
+        buildPhoto({
+          category: 'travel',
+          dateTaken: '2027-01-01T00:00:00',
+          id: 'travel-001',
+        }),
+        buildPhoto({
+          dateTaken: '2026-03-03T00:00:00',
+          id: 'portrait-003',
+          sortOrder: 3,
+        }),
+        buildPhoto({
+          dateTaken: '2026-01-01T00:00:00',
+          id: 'portrait-001',
+          sortOrder: 1,
+        }),
+        buildPhoto({
+          dateTaken: '2026-02-02T00:00:00',
+          id: 'portrait-002',
+          sortOrder: 2,
+        }),
+      ],
+      seed: 123,
+      sortMode: 'latest',
+    });
+
+    assert.deepEqual(
+      ordered.map((photo) => photo.id),
+      ['travel-001', 'portrait-001', 'portrait-002', 'portrait-003'],
+    );
+  });
 });
